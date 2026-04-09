@@ -135,14 +135,15 @@ class MegatronTrainRayActor(TrainRayActor):
                 m.enabled = getattr(self.args, f"use_{m.name}_replay")
                 m.enable_check_replay_result = m.enabled and self.args.ci_test
 
+        checkpointing_context = None
         if recv_ckpt_src_rank is not None:
             ckpt_manager = recv_ckpt(
                 indep_dp=get_parallel_state().indep_dp,
                 src_rank=recv_ckpt_src_rank,
             )
-        else:
-            ckpt_manager = InMemoryCheckpointManager()
-        checkpointing_context = {"local_checkpoint_manager": ckpt_manager}
+            checkpointing_context = {"local_checkpoint_manager": ckpt_manager}
+        elif args.non_persistent_ckpt_type == "local":
+            checkpointing_context = {"local_checkpoint_manager": InMemoryCheckpointManager()}
 
         (self.model, self.optimizer, self.opt_param_scheduler, loaded_rollout_id) = initialize_model_and_optimizer(
             args, role, checkpointing_context=checkpointing_context
