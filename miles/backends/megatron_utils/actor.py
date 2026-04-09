@@ -39,6 +39,7 @@ from .checkpoint import load_checkpoint
 from .checkpoint_transfer import recv_ckpt
 from .checkpoint_transfer import send_ckpt as _send_ckpt
 from .in_memory_checkpoint import InMemoryCheckpointManager
+from .indep_dp import set_indep_dp_operation_timeout
 from .indep_dp import reconfigure_indep_dp_group
 from .initialize import init, is_first_replica_megatron_main_rank
 from .lora_utils import is_lora_enabled
@@ -148,6 +149,9 @@ class MegatronTrainRayActor(TrainRayActor):
         (self.model, self.optimizer, self.opt_param_scheduler, loaded_rollout_id) = initialize_model_and_optimizer(
             args, role, checkpointing_context=checkpointing_context
         )
+
+        if args.indep_dp:
+            set_indep_dp_operation_timeout(get_parallel_state())
 
         verify_megatron_parallel_state(self.model)
 
@@ -666,6 +670,7 @@ class MegatronTrainRayActor(TrainRayActor):
             iteration=self._last_rollout_id,
             dst_rank=dst_rank,
         )
+        set_indep_dp_operation_timeout(get_parallel_state())
 
     def reconfigure_indep_dp(self, indep_dp_info: IndepDPInfo) -> None:
         reconfigure_indep_dp_group(
