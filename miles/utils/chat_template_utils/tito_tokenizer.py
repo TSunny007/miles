@@ -154,28 +154,21 @@ class TITOTokenizer:
         appended_messages: list[dict[str, Any]],
         tools: list[dict[str, Any]] | None = None,
     ) -> list[int]:
+        # No dummy user to avoid cut think issues.
         return self._tokenize_rendered_suffix(
             [_DUMMY_SYSTEM, _build_dummy_assistant(appended_messages)],
             appended_messages,
             tools=tools,
         )
 
-    def _tokenize_user_segment(
+    def _tokenize_user_and_system_segment(
         self,
         appended_message: dict[str, Any],
         tools: list[dict[str, Any]] | None = None,
     ) -> list[int]:
-        return self._tokenize_rendered_suffix(
-            [_DUMMY_SYSTEM, _DUMMY_USER],
-            [appended_message],
-            tools=tools,
-        )
-
-    def _tokenize_system_segment(
-        self,
-        appended_message: dict[str, Any],
-        tools: list[dict[str, Any]] | None = None,
-    ) -> list[int]:
+        # User/system single-message appends share one synthetic context.
+        # For the models covered by current matrix/e2e tests, this path does
+        # not hit extra template assertions such as "No user query found in messages."
         return self._tokenize_rendered_suffix(
             [_DUMMY_SYSTEM],
             [appended_message],
@@ -218,10 +211,8 @@ class TITOTokenizer:
             role = segment[0]["role"]
             if role == "tool":
                 incremental.extend(self._tokenize_tool_segment(segment, tools))
-            elif role == "user":
-                incremental.extend(self._tokenize_user_segment(segment[0], tools))
-            elif role == "system":
-                incremental.extend(self._tokenize_system_segment(segment[0], tools))
+            elif role == "user" or role == "system":
+                incremental.extend(self._tokenize_user_and_system_segment(segment[0], tools))
             else:
                 raise ValueError(f"unsupported appended role for TITO tokenization: {role}")
 
