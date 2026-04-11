@@ -1,16 +1,15 @@
 """TITO tokenizer — incremental tokenization for pretokenized prefix reuse.
 
 ``TITOTokenizer`` computes incremental token IDs for non-assistant messages
-(tool responses, system injections) that follow the assistant's generated
-token sequence, then merges them with the pretokenized prefix — handling
-model-specific boundary tokens at the junction.
+(tool responses, user follow-ups, system injections) that follow the
+assistant's generated token sequence, then merges them with the pretokenized
+prefix — handling model-specific boundary tokens at the junction.
 
 The default implementation incrementally tokenizes appended non-assistant turns
 with role-specific synthetic prefixes:
 
 - contiguous ``tool`` runs use ``[dummy_system, dummy_assistant]``
-- each ``user`` message uses ``[dummy_system, dummy_user]``
-- each ``system`` message uses ``[dummy_system]``
+- each ``user`` or ``system`` message uses ``[dummy_system]``
 
 The appended suffix is processed left-to-right, then the generation prompt for
 the next assistant turn is appended once at the end.  Model-specific
@@ -27,7 +26,6 @@ from miles.utils.chat_template_utils.template import apply_chat_template, assert
 from miles.utils.chat_template_utils.token_seq_comparator import TokenSeqComparator
 
 _DUMMY_SYSTEM: dict[str, Any] = {"role": "system", "content": "dummy system"}
-_DUMMY_USER: dict[str, Any] = {"role": "user", "content": "dummy user"}
 
 
 def _build_dummy_assistant(tool_responses: list[dict[str, Any]]) -> dict[str, Any]:
@@ -167,8 +165,6 @@ class TITOTokenizer:
         tools: list[dict[str, Any]] | None = None,
     ) -> list[int]:
         # User/system single-message appends share one synthetic context.
-        # For the models covered by current matrix/e2e tests, this path does
-        # not hit extra template assertions such as "No user query found in messages."
         return self._tokenize_rendered_suffix(
             [_DUMMY_SYSTEM],
             [appended_message],
@@ -184,9 +180,9 @@ class TITOTokenizer:
         """Compute incremental token IDs for non-assistant messages appended
         after the pretokenized prefix.
 
-        Only handles tool responses, system injections, etc. — never an
-        assistant message.  Validates that *new_messages* is an append-only
-        extension of *old_messages* via
+        Handles tool responses, user follow-ups, and system injections —
+        never an assistant message.  Validates that *new_messages* is an
+        append-only extension of *old_messages* via
         ``assert_messages_append_only_with_allowed_role``.
 
         Args:

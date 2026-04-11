@@ -41,8 +41,9 @@ TOOL_CALL_TEST_MODELS = [
 # Filtered out of parametrized test cases below.
 _TITO_EXCLUDED_MODELS: dict[str, str] = {
     "Qwen/Qwen3.5-0.8B": (
-        "The qwen3.5 fixed template rejects the synthetic tool/system dummy base "
-        "used by TITO's segment diff with 'No user query found in messages'."
+        "The qwen3.5 fixed template rejects non-first system messages with "
+        "'System message must be at the beginning'.  TITO's synthetic bases "
+        "place system first, so this exclusion may be removable — needs testing."
     ),
     "deepseek-ai/DeepSeek-V3": (
         "TITO tokenizes each tool segment independently via _tokenize_tool_segment, "

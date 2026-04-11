@@ -35,8 +35,9 @@ TestTokenizeAdditional
     Split points are auto-detected by _find_tito_splits from message structure,
     so adding a trajectory to _TOOL_TRAJECTORIES automatically extends coverage.
 
-    Remaining tests verify append-only validation (reject prefix mutation,
-    fewer messages, or forbidden roles like assistant).
+    Remaining tests cover segmentation logic, generation-prompt timing,
+    reasoning-content shape, merge structure preservation, and append-only
+    validation (reject prefix mutation, fewer messages, or forbidden roles).
 
 TestFactory
     get_tito_tokenizer factory: string/enum dispatch, invalid input handling.
@@ -164,8 +165,8 @@ def _split_at(traj_cls, pos: int):
     """Split trajectory at *pos* into ``(old_msgs, new_msgs, tools)``.
 
     ``old_msgs = messages[:pos]`` — the pretokenized prefix (ends with assistant turn).
-    ``new_msgs`` extends through all subsequent non-assistant messages (tool/system),
-    stopping before the next assistant turn.
+    ``new_msgs`` extends through all subsequent non-assistant messages
+    (tool/user/system), stopping before the next assistant turn.
     """
     msgs = traj_cls.MESSAGES
     end = pos
