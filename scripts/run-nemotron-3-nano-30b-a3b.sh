@@ -25,7 +25,7 @@ source "${SCRIPT_DIR}/models/nemotron-3-nano-30b-a3b.sh"
 
 MODEL_DIR=/cluster_public/miles_data/models/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16
 # CELL=ep4 (TP=1 PP=1 CP=1 EP=4 DP=2)
-OUT_DIR=/cluster_personal/zhichen/ckpts/nemotron-3-nano-30b-a3b-cp2ep4
+OUT_DIR=/cluster_personal/zhichen/ckpts/nemotron-3-nano-30b-a3b-ep4-retry
 
 CKPT_ARGS=(
    --hf-checkpoint $MODEL_DIR
@@ -57,7 +57,7 @@ EVAL_ARGS=(
 PERF_ARGS=(
    --tensor-model-parallel-size 1
    --pipeline-model-parallel-size 1
-   --context-parallel-size 2
+   --context-parallel-size 1
    --expert-model-parallel-size 4
    --expert-tensor-parallel-size 1
    --recompute-granularity full
