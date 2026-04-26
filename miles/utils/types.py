@@ -214,8 +214,9 @@ class Sample:
     @property
     def oldest_weight_version(self) -> int | None:
         """Minimum weight version across all turns (generation calls) for this trajectory."""
-        numeric = [int(v) for v in self.weight_versions if str(v).isdigit()]
-        return min(numeric) if numeric else None
+        if not self.weight_versions:
+            return None
+        return min(int(v) for v in self.weight_versions)
 
     def update_from_meta_info(self, args, meta_info: dict):
         """
@@ -230,7 +231,11 @@ class Sample:
         self.prefix_cache_info.add(meta_info=meta_info)
 
         if "weight_version" in meta_info:
-            self.weight_versions.append(meta_info["weight_version"])
+            weight_version = meta_info["weight_version"]
+            # SGLang uses "default" before Miles assigns a training weight
+            # version. It is not a numeric rollout weight version.
+            if weight_version != "default":
+                self.weight_versions.append(weight_version)
 
         match meta_info["finish_reason"]["type"]:
             case "length":

@@ -1,5 +1,6 @@
 """Unit tests for Sample.strip_last_output_tokens."""
 
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import numpy
@@ -95,3 +96,14 @@ class TestStripLastOutputTokens:
         original_tokens = list(s.tokens)
         s.strip_last_output_tokens(-1, tokenizer)
         assert s.tokens == original_tokens
+
+
+class TestMetaInfo:
+    def test_default_weight_version_is_not_recorded(self):
+        s = Sample()
+        s.update_from_meta_info(
+            SimpleNamespace(sglang_speculative_algorithm=None),
+            {"weight_version": "default", "finish_reason": {"type": "stop"}},
+        )
+
+        assert s.weight_versions == []

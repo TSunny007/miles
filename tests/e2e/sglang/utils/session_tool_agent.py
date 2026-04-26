@@ -1,4 +1,4 @@
-"""Custom agent function for the session-server tool-call e2e test.
+"""Custom generate and agent functions for the session-server tool-call e2e test.
 
 Runs a multi-turn tool-calling conversation through the session proxy
 and validates that the full TITO pretokenization + rollback pipeline
@@ -22,14 +22,18 @@ If no prior assistant checkpoint exists (``total_tool_calls == 0``),
 strategy 2 is used unconditionally since there is nothing to roll back
 to.  This exercises both retry code paths under real inference.
 
-The agent is loaded at runtime by ``agentic_tool_call.generate`` via
-``--custom-agent-function-path tests.e2e.sglang.utils.session_tool_agent.run_agent``.
+The generate wrapper and agent are loaded at runtime via
+``--custom-generate-function-path tests.e2e.sglang.utils.session_tool_agent.generate``
+and ``--custom-agent-function-path tests.e2e.sglang.utils.session_tool_agent.run_agent``.
 """
 
 import logging
 import random
 
 import httpx
+
+from miles.rollout.base_types import GenerateFnInput, GenerateFnOutput
+from miles.rollout.generate_hub.agentic_tool_call import generate as _base_generate
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +72,25 @@ MOCK_TOOL_RESULTS = [
     '{"temperature_celsius": 30, "condition": "rainy", "humidity": 90}',
     '{"temperature_celsius": 8, "condition": "snowy", "humidity": 85}',
 ]
+
+
+async def generate(input: GenerateFnInput) -> GenerateFnOutput:
+    output = await _base_generate(input)
+    allowed_roles = input.args.tito_allowed_append_roles
+    if allowed_roles != ["tool"]:
+        raise AssertionError(
+            "session_tool_agent.generate only verifies tool append coverage today; " f"allowed_roles={allowed_roles}"
+        )
+
+    samples = output.samples if isinstance(output.samples, list) else [output.samples]
+    total_tool_appends = max(sample.metadata["total_tool_appends"] for sample in samples)
+    if total_tool_appends <= 0:
+        raise AssertionError("Session e2e did not exercise any tool append request")
+    logger.info("Session tool append coverage verified: total_tool_appends=%d", total_tool_appends)
+    return output
+
+
+generate.add_arguments = _base_generate.add_arguments
 
 
 def _is_task_complete(assistant_msg: dict) -> bool:
@@ -131,10 +154,13 @@ async def run_agent(base_url, prompt, request_kwargs, metadata, **kwargs):
     total_rollbacks = 0
     total_tool_retries = 0
     consecutive_retries = 0
+    pending_tool_appends = 0
+    total_tool_appends = 0
 
     async with httpx.AsyncClient(timeout=180) as client:
         for turn in range(1, MAX_TOOL_TURNS + 1):
             label = f"Session Turn {turn}"
+            sent_tool_appends = pending_tool_appends
             resp_data = await _chat(
                 client,
                 base_url,
@@ -143,6 +169,8 @@ async def run_agent(base_url, prompt, request_kwargs, metadata, **kwargs):
                 label=label,
                 tool_choice="auto",
             )
+            total_tool_appends += sent_tool_appends
+            pending_tool_appends = 0
 
             turns_completed = turn
 
@@ -171,6 +199,7 @@ async def run_agent(base_url, prompt, request_kwargs, metadata, **kwargs):
                             "tool_call_id": tc["id"],
                         }
                     )
+                    pending_tool_appends += 1
                 total_tool_calls += len(tool_calls)
                 logger.info(
                     "Turn %d: appended %d tool result(s), total tool calls so far: %d",
@@ -204,6 +233,7 @@ async def run_agent(base_url, prompt, request_kwargs, metadata, **kwargs):
                     messages.append(
                         {"role": "tool", "content": RETRY_TOOL_MESSAGE, "tool_call_id": "invalid_tool_call"}
                     )
+                    pending_tool_appends += 1
                     total_tool_retries += 1
                     logger.info(
                         "Turn %d: kept assistant + appended tool retry message (%d/%d)",
@@ -213,9 +243,10 @@ async def run_agent(base_url, prompt, request_kwargs, metadata, **kwargs):
                     )
 
     logger.info(
-        "Agent done: %d turns, %d tool_calls, %d rollbacks, %d tool_retries",
+        "Agent done: %d turns, %d tool_calls, %d tool_appends, %d rollbacks, %d tool_retries",
         turns_completed,
         total_tool_calls,
+        total_tool_appends,
         total_rollbacks,
         total_tool_retries,
     )
@@ -223,6 +254,7 @@ async def run_agent(base_url, prompt, request_kwargs, metadata, **kwargs):
     return {
         "turns_completed": turns_completed,
         "total_tool_calls": total_tool_calls,
+        "total_tool_appends": total_tool_appends,
         "total_rollbacks": total_rollbacks,
         "total_tool_retries": total_tool_retries,
     }

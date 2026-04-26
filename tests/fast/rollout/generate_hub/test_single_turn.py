@@ -240,6 +240,12 @@ class TestMetaInfo:
         assert result.requests == [expected_request(variant)]
         assert listify(result.sample) == [expected_sample(variant, cached_tokens=3, weight_versions=["v1.0"])]
 
+    @pytest.mark.parametrize("generation_env", [{"process_fn_kwargs": {"weight_version": "default"}}], indirect=True)
+    def test_default_weight_version_is_not_recorded(self, variant, generation_env):
+        result = _run_generate(variant, generation_env)
+        sample = result.sample[0] if isinstance(result.sample, list) else result.sample
+        assert sample.weight_versions == []
+
     @pytest.mark.parametrize(
         "generation_env",
         [

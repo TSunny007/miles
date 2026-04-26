@@ -26,6 +26,7 @@ class ModelConfig:
     reasoning_parser: str
     tool_call_parser: str | None = None
     tito_model: str = "default"
+    allowed_append_roles: tuple[str, ...] = ("tool",)
     num_gpus: int = 1
 
 
@@ -102,13 +103,17 @@ def execute():
 
     generate_args = (
         "--custom-generate-function-path "
-        "miles.rollout.generate_hub.agentic_tool_call.generate "
+        "tests.e2e.sglang.utils.session_tool_agent.generate "
         "--custom-agent-function-path "
         "tests.e2e.sglang.utils.session_tool_agent.run_agent "
     )
 
+    allowed_roles_arg = " ".join(cfg.allowed_append_roles)
     router_args = (
-        "--use-miles-router " "--use-session-server " "--chat-template-path autofix " f"--tito-model {cfg.tito_model} "
+        "--use-miles-router "
+        "--use-session-server "
+        f"--tito-model {cfg.tito_model} "
+        f"--tito-allowed-append-roles {allowed_roles_arg} "
     )
 
     sglang_args = f"--rollout-num-gpus-per-engine {cfg.num_gpus} " f"--sglang-reasoning-parser {cfg.reasoning_parser} "
