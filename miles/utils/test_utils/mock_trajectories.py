@@ -4,6 +4,19 @@ Each trajectory class defines a complete multi-turn conversation with tool calls
 Used by:
 - tests/fast/rollout/generate_hub/test_pretokenized_chat.py (chat template verification)
 - tests/fast/router/test_session_pretokenized_e2e.py (session proxy e2e)
+
+Class attributes consumed by chat_template_verify:
+
+- ``APPEND_ROLES: frozenset[str]`` — non-assistant roles that appear *after*
+  the first assistant message (``tool`` / ``user`` / ``system``).  These are
+  the roles the session must allow to be appended on top of an assistant-
+  stopped prefix; drives ``--tito-allowed-append-roles`` filtering.
+- ``IS_THINKING: bool`` — ``True`` iff at least one assistant message carries
+  ``reasoning_content``.  Drives ``--thinking`` filtering and whether the
+  ``enable_thinking`` chat-template kwarg is passed.
+
+Both are declared explicitly on each class so readers can see a trajectory's
+verify-layer classification without having to execute the module.
 """
 
 from __future__ import annotations
@@ -107,6 +120,8 @@ class SingleToolTrajectory:
 
     TOOLS = WEATHER_TOOLS
     PRETOKENIZE_POSITIONS = [3]
+    APPEND_ROLES = frozenset({"tool"})
+    IS_THINKING = False
     MESSAGES = [
         {"role": "system", "content": "You are a helpful assistant."},
         {"role": "user", "content": "What's the weather in Beijing?"},
@@ -137,6 +152,8 @@ class MultiTurnTrajectory:
 
     TOOLS = WEATHER_TOOLS
     PRETOKENIZE_POSITIONS = [4]
+    APPEND_ROLES = frozenset({"tool"})
+    IS_THINKING = False
     MESSAGES = [
         {"role": "system", "content": "You are a helpful assistant."},
         {"role": "user", "content": "What's the weather in Beijing and Shanghai?"},
@@ -186,6 +203,8 @@ class MultiToolSingleTurnTrajectory:
 
     TOOLS = ALL_TOOLS
     PRETOKENIZE_POSITIONS = [3]
+    APPEND_ROLES = frozenset({"tool"})
+    IS_THINKING = False
     MESSAGES = [
         {"role": "system", "content": "You are a helpful assistant."},
         {"role": "user", "content": "What's the weather in Beijing and what date is it?"},
@@ -229,6 +248,8 @@ class ParallelToolsTrajectory:
 
     TOOLS = WEATHER_TOOLS
     PRETOKENIZE_POSITIONS = [3]
+    APPEND_ROLES = frozenset({"tool"})
+    IS_THINKING = False
     MESSAGES = [
         {"role": "system", "content": "You are a helpful assistant."},
         {"role": "user", "content": "Compare weather in Beijing, Shanghai, and Guangzhou"},
@@ -285,6 +306,8 @@ class LongChainTrajectory:
 
     TOOLS = ALL_TOOLS
     PRETOKENIZE_POSITIONS = [4, 6]
+    APPEND_ROLES = frozenset({"tool"})
+    IS_THINKING = False
     MESSAGES = [
         {"role": "system", "content": "You are a helpful assistant."},
         {"role": "user", "content": "Do a multi-step task"},
@@ -357,6 +380,8 @@ class RetrySystemTrajectory:
 
     TOOLS = WEATHER_TOOLS
     PRETOKENIZE_POSITIONS = [3, 5]
+    APPEND_ROLES = frozenset({"tool", "system"})
+    IS_THINKING = False
     MESSAGES = [
         {"role": "system", "content": "You are a helpful assistant."},
         {"role": "user", "content": "What's the weather in Beijing and Shanghai?"},
@@ -413,6 +438,8 @@ class MultiUserToolChainTrajectory:
 
     TOOLS = ALL_TOOLS
     PRETOKENIZE_POSITIONS = [8]
+    APPEND_ROLES = frozenset({"tool", "user"})
+    IS_THINKING = False
     MESSAGES = [
         {"role": "system", "content": "You are a helpful assistant."},
         {"role": "user", "content": "What's the weather in Beijing?"},
@@ -486,6 +513,8 @@ class SimpleNoToolTrajectory:
 
     TOOLS = None
     PRETOKENIZE_POSITIONS = [3]
+    APPEND_ROLES = frozenset()
+    IS_THINKING = False
     MESSAGES = [
         {"role": "system", "content": "You are a helpful assistant."},
         {"role": "user", "content": "Hello!"},
@@ -498,6 +527,8 @@ class MultiTurnNoToolTrajectory:
 
     TOOLS = None
     PRETOKENIZE_POSITIONS = [3, 5]
+    APPEND_ROLES = frozenset({"user"})
+    IS_THINKING = False
     MESSAGES = [
         {"role": "system", "content": "You are a helpful assistant."},
         {"role": "user", "content": "What is the capital of France?"},
@@ -511,6 +542,8 @@ class MultiTurnNoToolThinkingTrajectory:
 
     TOOLS = None
     PRETOKENIZE_POSITIONS = [3, 5]
+    APPEND_ROLES = frozenset({"user"})
+    IS_THINKING = True
     MESSAGES = [
         {"role": "system", "content": "You are a helpful assistant."},
         {"role": "user", "content": "What is the capital of France?"},
@@ -533,6 +566,8 @@ class SingleToolThinkingTrajectory:
 
     TOOLS = WEATHER_TOOLS
     PRETOKENIZE_POSITIONS = [3]
+    APPEND_ROLES = frozenset({"tool"})
+    IS_THINKING = True
     MESSAGES = [
         {"role": "system", "content": "You are a helpful assistant."},
         {"role": "user", "content": "What's the weather in Beijing?"},
@@ -564,6 +599,8 @@ class MultiTurnThinkingTrajectory:
 
     TOOLS = WEATHER_TOOLS
     PRETOKENIZE_POSITIONS = [4]
+    APPEND_ROLES = frozenset({"tool"})
+    IS_THINKING = True
     MESSAGES = [
         {"role": "system", "content": "You are a helpful assistant."},
         {"role": "user", "content": "What's the weather in Beijing and Shanghai?"},
@@ -615,6 +652,8 @@ class LongChainThinkingTrajectory:
 
     TOOLS = ALL_TOOLS
     PRETOKENIZE_POSITIONS = [4, 6]
+    APPEND_ROLES = frozenset({"tool"})
+    IS_THINKING = True
     MESSAGES = [
         {"role": "system", "content": "You are a helpful assistant."},
         {"role": "user", "content": "Do a multi-step task"},
@@ -691,6 +730,8 @@ class MultiUserTurnThinkingTrajectory:
 
     TOOLS = WEATHER_TOOLS
     PRETOKENIZE_POSITIONS = [7]
+    APPEND_ROLES = frozenset({"tool", "user"})
+    IS_THINKING = True
     MESSAGES = [
         {"role": "system", "content": "You are a helpful assistant."},
         # --- user turn 1 ---
@@ -755,6 +796,8 @@ class IntermediateSystemTrajectory:
 
     TOOLS = ALL_TOOLS
     PRETOKENIZE_POSITIONS = [5, 8]
+    APPEND_ROLES = frozenset({"tool", "system"})
+    IS_THINKING = False
     MESSAGES = [
         {"role": "system", "content": "You are a helpful assistant."},
         {"role": "user", "content": "Do a multi-step task"},
@@ -825,6 +868,8 @@ class IntermediateSystemThinkingTrajectory:
 
     TOOLS = ALL_TOOLS
     PRETOKENIZE_POSITIONS = [5, 8]
+    APPEND_ROLES = frozenset({"tool", "system"})
+    IS_THINKING = True
     MESSAGES = [
         {"role": "system", "content": "You are a helpful assistant."},
         {"role": "user", "content": "Do a multi-step task"},

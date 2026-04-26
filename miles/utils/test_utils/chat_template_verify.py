@@ -128,6 +128,17 @@ def verify_append_only(
 # ---------------------------------------------------------------------------
 # Built-in test cases (shared between CLI and test suite)
 # ---------------------------------------------------------------------------
+#
+# Trajectories expose two class attributes used for verify-layer filtering:
+#
+#   * ``APPEND_ROLES: frozenset[str]`` — non-assistant roles that appear after
+#     the first assistant message.  Drives ``--tito-allowed-append-roles``.
+#   * ``IS_THINKING: bool`` — any assistant carries ``reasoning_content``.
+#     Drives ``--thinking`` and whether ``enable_thinking`` kwarg is passed.
+#
+# Both are declared on the trajectory class (mock_trajectories.py), alongside
+# ``TOOLS`` / ``PRETOKENIZE_POSITIONS`` / ``MESSAGES``.  This file only lists
+# which trajectories to exercise and expands them into concrete cases.
 
 import re  # noqa: E402
 
@@ -137,6 +148,8 @@ from miles.utils.test_utils.mock_trajectories import (  # noqa: E402
     LongChainThinkingTrajectory,
     LongChainTrajectory,
     MultiToolSingleTurnTrajectory,
+    MultiTurnNoToolThinkingTrajectory,
+    MultiTurnNoToolTrajectory,
     MultiTurnThinkingTrajectory,
     MultiTurnTrajectory,
     MultiUserToolChainTrajectory,
@@ -154,115 +167,234 @@ def _short_name(cls: type) -> str:
     return re.sub(r"(?<!^)(?=[A-Z])", "_", name).lower()
 
 
-def _build_cases(
-    specs: list[tuple[type, list[dict] | None]],
-) -> list[tuple[str, type, int, list[dict] | None]]:
-    """Generate (case_name, traj_cls, N, tools) from trajectory specs.
+# Trajectories exercised by ``run_all_checks`` / the CLI.  Must be a subset of
+# the classes defined in mock_trajectories.py.  Callers (CLI, tests) pick
+# the applicable subset via ``filter_cases`` / ``expand_runs`` based on
+# each template's supported append roles and thinking mode; there is no
+# global "exclude" list here.
+_TRAJECTORIES: list[type] = [
+    SingleToolTrajectory,
+    MultiTurnTrajectory,
+    MultiToolSingleTurnTrajectory,
+    ParallelToolsTrajectory,
+    LongChainTrajectory,
+    MultiUserToolChainTrajectory,
+    RetrySystemTrajectory,
+    IntermediateSystemTrajectory,
+    SimpleNoToolTrajectory,
+    MultiTurnNoToolTrajectory,
+    SingleToolThinkingTrajectory,
+    MultiTurnThinkingTrajectory,
+    LongChainThinkingTrajectory,
+    MultiUserTurnThinkingTrajectory,
+    IntermediateSystemThinkingTrajectory,
+    MultiTurnNoToolThinkingTrajectory,
+]
 
-    Each trajectory class's ``PRETOKENIZE_POSITIONS`` determines the N values.
+
+@dataclass(frozen=True)
+class CaseSpec:
+    """One verify case with classification metadata copied from its trajectory."""
+
+    case_name: str
+    traj_cls: type
+    pretokenize_n: int
+    tools: list[dict] | None
+    append_roles: frozenset[str]
+    is_thinking: bool
+
+
+def _expand(traj_cls: type) -> list[CaseSpec]:
+    """Expand one trajectory into one CaseSpec per PRETOKENIZE_POSITIONS value."""
+    short = _short_name(traj_cls)
+    return [
+        CaseSpec(
+            case_name=f"{short}-N{n}",
+            traj_cls=traj_cls,
+            pretokenize_n=n,
+            tools=traj_cls.TOOLS,
+            append_roles=traj_cls.APPEND_ROLES,
+            is_thinking=traj_cls.IS_THINKING,
+        )
+        for n in traj_cls.PRETOKENIZE_POSITIONS
+    ]
+
+
+ALL_CASES: list[CaseSpec] = [c for t in _TRAJECTORIES for c in _expand(t)]
+
+# ``tool`` is always considered allowed when filtering: the session layer
+# assumes a tool-capable agent, so ``--tito-allowed-append-roles`` only needs
+# to specify the *optional* roles (user, system).
+_IMPLICIT_ALLOWED_ROLES: frozenset[str] = frozenset({"tool"})
+
+THINKING_MODES: tuple[str, ...] = ("off", "on", "both")
+
+
+def filter_cases(
+    cases: list[CaseSpec],
+    *,
+    allowed_append_roles: set[str] | frozenset[str],
+    thinking: str,
+) -> list[CaseSpec]:
+    """Select cases whose append roles fit *allowed_append_roles* and whose
+    thinking flag fits *thinking* (``"off"`` / ``"on"`` / ``"both"``).
+
+    ``tool`` is unioned into *allowed_append_roles* automatically.  ``both``
+    accepts either thinking value; the actual expansion into
+    ``enable_thinking=True/False`` happens in :func:`run_all_checks`.
     """
-    cases: list[tuple[str, type, int, list[dict] | None]] = []
-    for traj_cls, tools in specs:
-        short = _short_name(traj_cls)
-        tools_label = traj_cls.TOOLS if tools is ... else tools
-        suffix = "-no_tools" if tools is None else ""
-        for n in traj_cls.PRETOKENIZE_POSITIONS:
-            cases.append((f"{short}-N{n}{suffix}", traj_cls, n, tools_label))
-    return cases
+    if thinking not in THINKING_MODES:
+        raise ValueError(f"thinking must be one of {THINKING_MODES}; got {thinking!r}")
+
+    allowed = frozenset(allowed_append_roles) | _IMPLICIT_ALLOWED_ROLES
+    out: list[CaseSpec] = []
+    for c in cases:
+        if not c.append_roles.issubset(allowed):
+            continue
+        if thinking == "off" and c.is_thinking:
+            continue
+        if thinking == "on" and not c.is_thinking:
+            continue
+        out.append(c)
+    return out
 
 
-# (trajectory_cls, tools) — ... means "use traj_cls.TOOLS"
-_STANDARD_SPECS: list[tuple[type, list[dict] | None]] = [
-    (SingleToolTrajectory, ...),
-    (SingleToolTrajectory, None),
-    (MultiTurnTrajectory, ...),
-    (MultiToolSingleTurnTrajectory, ...),
-    (ParallelToolsTrajectory, ...),
-    (LongChainTrajectory, ...),
-    (MultiUserToolChainTrajectory, ...),
-    (SimpleNoToolTrajectory, None),
-]
+def expand_runs(
+    *,
+    supports_thinking: bool,
+    allowed_append_roles: frozenset[str] | None = None,
+    extra_template_kwargs: dict | None = None,
+):
+    """Yield ``(case, template_kwargs)`` pairs consistent with a template's
+    capability, for use by pytest parametrize in template / alignment tests.
 
-_THINKING_SPECS: list[tuple[type, list[dict] | None]] = [
-    (SingleToolTrajectory, ...),
-    (SingleToolThinkingTrajectory, ...),
-    (MultiTurnThinkingTrajectory, ...),
-    (LongChainThinkingTrajectory, ...),
-    (MultiUserTurnThinkingTrajectory, ...),
-]
+    * ``supports_thinking``: False filters out thinking cases and yields no
+      ``enable_thinking`` kwarg.  True yields both ``enable_thinking=True``
+      and ``enable_thinking=False`` for every selected case (thinking or
+      not), so the template's thinking branch is exercised against
+      non-reasoning input too.
+    * ``allowed_append_roles``: ``None`` means all roles; otherwise cases
+      whose ``append_roles`` is not a subset are skipped.  ``tool`` is
+      unioned in implicitly (matches :func:`filter_cases`).
+    * ``extra_template_kwargs``: merged into every yielded kwargs dict —
+      used to thread template-specific kwargs like GLM's
+      ``clear_thinking=False``.
+    """
+    thinking = "both" if supports_thinking else "off"
+    roles = allowed_append_roles if allowed_append_roles is not None else frozenset({"tool", "user", "system"})
+    extra = extra_template_kwargs or {}
+    selected = filter_cases(ALL_CASES, allowed_append_roles=roles, thinking=thinking)
+    for c in selected:
+        if supports_thinking:
+            for enable in (True, False):
+                yield c, {"enable_thinking": enable, **extra}
+        else:
+            yield c, dict(extra)
 
-_INTERMEDIATE_SYSTEM_SPECS: list[tuple[type, list[dict] | None]] = [
-    (RetrySystemTrajectory, ...),
-    (IntermediateSystemTrajectory, ...),
-]
 
-_INTERMEDIATE_SYSTEM_THINKING_SPECS: list[tuple[type, list[dict] | None]] = [
-    (IntermediateSystemThinkingTrajectory, ...),
-]
+@dataclass
+class CoverageReport:
+    """Coverage of cases across ``(is_thinking, append_roles \\ {tool})``.
 
-STANDARD_CASES: list[tuple[str, type, int, list[dict] | None]] = _build_cases(_STANDARD_SPECS)
-THINKING_CASES: list[tuple[str, type, int, list[dict] | None]] = _build_cases(_THINKING_SPECS)
-INTERMEDIATE_SYSTEM_CASES: list[tuple[str, type, int, list[dict] | None]] = _build_cases(_INTERMEDIATE_SYSTEM_SPECS)
-INTERMEDIATE_SYSTEM_THINKING_CASES: list[tuple[str, type, int, list[dict] | None]] = _build_cases(
-    _INTERMEDIATE_SYSTEM_THINKING_SPECS
-)
+    ``covered`` maps each combination to the case names that fall in it;
+    ``missing`` lists combinations with no case.  ``tool`` is excluded from
+    the role axis because it is implicitly always allowed.
+    """
+
+    covered: dict[tuple[bool, tuple[str, ...]], list[str]]
+    missing: list[tuple[bool, tuple[str, ...]]]
+
+
+def check_coverage(
+    cases: list[CaseSpec] | None = None,
+    *,
+    role_universe: set[str] | None = None,
+) -> CoverageReport:
+    """Enumerate ``thinking × append-role-subset`` combinations and report gaps.
+
+    Used as a sanity check that every meaningful combination of
+    ``--tito-allowed-append-roles`` and ``--thinking`` is backed by at least
+    one trajectory — otherwise certain CLI settings would be no-ops.
+    """
+    if cases is None:
+        cases = ALL_CASES
+    if role_universe is None:
+        role_universe = {"user", "system"}
+
+    from itertools import chain, combinations
+
+    ordered_universe = sorted(role_universe)
+    all_subsets: list[tuple[str, ...]] = [
+        tuple(sub)
+        for sub in chain.from_iterable(combinations(ordered_universe, r) for r in range(len(ordered_universe) + 1))
+    ]
+
+    covered: dict[tuple[bool, tuple[str, ...]], list[str]] = {
+        (is_thinking, sub): [] for is_thinking in (False, True) for sub in all_subsets
+    }
+    for c in cases:
+        roles_key = tuple(sorted(c.append_roles - _IMPLICIT_ALLOWED_ROLES))
+        key = (c.is_thinking, roles_key)
+        if key in covered:
+            covered[key].append(c.case_name)
+
+    missing = [k for k, v in covered.items() if not v]
+    return CoverageReport(covered=covered, missing=missing)
 
 
 def run_all_checks(
     chat_template: str,
     *,
-    include_thinking: bool = False,
-    include_intermediate_system: bool = True,
+    allowed_append_roles: set[str] | frozenset[str] | None = None,
+    thinking: str = "off",
 ) -> list[VerifyResult]:
-    """Run all built-in verification cases against *chat_template*.
+    """Run verification cases filtered by *allowed_append_roles* and *thinking*.
 
-    When *include_thinking* is True, also runs thinking-specific cases with
-    ``enable_thinking=True`` and ``enable_thinking=False``.
+    ``allowed_append_roles`` is the set of roles the session may append after
+    an assistant turn.  ``tool`` is implicit; defaults to
+    ``{"tool", "user", "system"}`` (all roles, matching the pre-refactor
+    behavior of ``include_intermediate_system=True``).  Trajectories whose
+    required roles are not a subset of the allow list are skipped.
 
-    When *include_intermediate_system* is True (default), also runs cases
-    that contain intermediate system messages.  Set to False for templates
-    that forbid non-initial system messages (e.g. Qwen3.5).
+    ``thinking``:
+
+    * ``"off"`` — non-thinking trajectories only (no ``enable_thinking`` kwarg).
+    * ``"on"`` — thinking trajectories with ``enable_thinking=True`` only.
+    * ``"both"`` — non-thinking + thinking trajectories; thinking trajectories
+      are rerun with ``enable_thinking=False`` so templates that branch on the
+      flag are exercised in both directions.  Equivalent to the old
+      ``include_thinking=True``.
     """
+    if allowed_append_roles is None:
+        allowed_append_roles = {"tool", "user", "system"}
+
+    selected = filter_cases(ALL_CASES, allowed_append_roles=allowed_append_roles, thinking=thinking)
+
     results: list[VerifyResult] = []
-
-    for case_name, traj_cls, n, tools in STANDARD_CASES:
-        results.append(
-            verify_append_only(chat_template, deepcopy(traj_cls.MESSAGES), n, tools=tools, case_name=case_name)
-        )
-
-    if include_intermediate_system:
-        for case_name, traj_cls, n, tools in INTERMEDIATE_SYSTEM_CASES:
-            results.append(
-                verify_append_only(chat_template, deepcopy(traj_cls.MESSAGES), n, tools=tools, case_name=case_name)
-            )
-
-    if include_thinking:
-        for enable in (True, False):
-            suffix = "thinking_on" if enable else "thinking_off"
-            for case_name, traj_cls, n, tools in THINKING_CASES:
-                full_name = f"{case_name}[{suffix}]"
+    for case in selected:
+        if case.is_thinking:
+            enable_values: tuple[bool, ...] = (True, False) if thinking == "both" else (True,)
+            for enable in enable_values:
+                suffix = "[thinking_on]" if enable else "[thinking_off]"
                 results.append(
                     verify_append_only(
                         chat_template,
-                        deepcopy(traj_cls.MESSAGES),
-                        n,
-                        tools=tools,
-                        case_name=full_name,
+                        deepcopy(case.traj_cls.MESSAGES),
+                        case.pretokenize_n,
+                        tools=case.tools,
+                        case_name=case.case_name + suffix,
                         enable_thinking=enable,
                     )
                 )
-            if include_intermediate_system:
-                for case_name, traj_cls, n, tools in INTERMEDIATE_SYSTEM_THINKING_CASES:
-                    full_name = f"{case_name}[{suffix}]"
-                    results.append(
-                        verify_append_only(
-                            chat_template,
-                            deepcopy(traj_cls.MESSAGES),
-                            n,
-                            tools=tools,
-                            case_name=full_name,
-                            enable_thinking=enable,
-                        )
-                    )
+        else:
+            results.append(
+                verify_append_only(
+                    chat_template,
+                    deepcopy(case.traj_cls.MESSAGES),
+                    case.pretokenize_n,
+                    tools=case.tools,
+                    case_name=case.case_name,
+                )
+            )
 
     return results

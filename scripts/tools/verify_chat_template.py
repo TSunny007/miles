@@ -12,8 +12,12 @@ Usage examples::
     # Verify with autofix (use our fixed template if available)
     python scripts/tools/verify_chat_template.py --model Qwen/Qwen3-0.6B --autofix
 
-    # Also run thinking-specific cases
-    python scripts/tools/verify_chat_template.py --model Qwen/Qwen3.5-0.8B --thinking
+    # Restrict which append roles the session is allowed to use (tool is implicit)
+    python scripts/tools/verify_chat_template.py --model Qwen/Qwen3-0.6B \\
+        --tito-allowed-append-roles user
+
+    # Run thinking cases: off (default) / on / both
+    python scripts/tools/verify_chat_template.py --model Qwen/Qwen3.5-0.8B --thinking both
 """
 
 from __future__ import annotations
@@ -66,9 +70,27 @@ def main() -> int:
         help="When using --model, apply our fixed template if one exists.",
     )
     parser.add_argument(
+        "--tito-allowed-append-roles",
+        nargs="+",
+        default=["tool"],
+        choices=["tool", "user", "system"],
+        metavar="ROLE",
+        help=(
+            "Roles the session may append after an assistant turn.  'tool' is "
+            "implicitly always allowed (listing it is fine).  Trajectories that "
+            "require roles outside this set are skipped.  Default: tool user system."
+        ),
+    )
+    parser.add_argument(
         "--thinking",
-        action="store_true",
-        help="Also run thinking-specific cases (enable_thinking=True/False).",
+        choices=["off", "on", "both"],
+        default="on",
+        help=(
+            "Thinking-mode filter.  off: non-thinking trajectories only.  "
+            "on: thinking trajectories with enable_thinking=True.  "
+            "both: non-thinking + thinking with enable_thinking={True,False}.  "
+            "Default: off."
+        ),
     )
 
     args = parser.parse_args()
@@ -80,14 +102,37 @@ def main() -> int:
     else:
         chat_template, source_desc = _load_template_from_model(args.model, autofix=args.autofix)
 
-    print(f"Template source: {source_desc}")
-    print(f"Thinking cases:  {'enabled' if args.thinking else 'disabled'}")
+    allowed_roles = set(args.tito_allowed_append_roles) | {"tool"}
+
+    from miles.utils.test_utils.chat_template_verify import ALL_CASES, check_coverage, filter_cases, run_all_checks
+
+    selected = filter_cases(ALL_CASES, allowed_append_roles=allowed_roles, thinking=args.thinking)
+
+    print(f"Template source:       {source_desc}")
+    print(f"Allowed append roles:  {sorted(allowed_roles)}")
+    print(f"Thinking mode:         {args.thinking}")
+    print(f"Selected trajectories: {len(selected)} of {len(ALL_CASES)} (after filtering)")
     print()
 
-    # ── Run verification ───────────────────────────────────────────────
-    from miles.utils.test_utils.chat_template_verify import run_all_checks
+    # Global coverage sanity check — reports gaps in the mock-trajectory pool,
+    # not gaps caused by the current CLI flags.  A gap here means some CLI
+    # setting exercises no trajectory; fixing it requires adding a trajectory
+    # in mock_trajectories.py.
+    coverage = check_coverage()
+    if coverage.missing:
+        print("Trajectory coverage gaps ((thinking, append_roles \\ {tool}) with no trajectory):")
+        for is_thinking, roles in coverage.missing:
+            label = "thinking    " if is_thinking else "non-thinking"
+            roles_str = "{" + ", ".join(roles) + "}" if roles else "{}"
+            print(f"  - {label}  x  {roles_str}")
+        print()
 
-    results = run_all_checks(chat_template, include_thinking=args.thinking)
+    # ── Run verification ───────────────────────────────────────────────
+    results = run_all_checks(
+        chat_template,
+        allowed_append_roles=allowed_roles,
+        thinking=args.thinking,
+    )
 
     # ── Print results ──────────────────────────────────────────────────
     passed = sum(1 for r in results if r.passed)

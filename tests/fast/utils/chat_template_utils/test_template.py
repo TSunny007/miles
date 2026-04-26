@@ -17,7 +17,6 @@ Each test asserts that our ``apply_chat_template`` produces identical token IDs.
 from __future__ import annotations
 
 import copy
-from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
@@ -25,24 +24,10 @@ from sglang.srt.entrypoints.openai.protocol import ChatCompletionRequest
 from sglang.srt.entrypoints.openai.serving_chat import OpenAIServingChat
 from transformers import AutoTokenizer
 
+from miles.utils.chat_template_utils.autofix import try_get_fixed_chat_template
 from miles.utils.chat_template_utils.template import apply_chat_template
-from miles.utils.test_utils.mock_trajectories import (
-    IntermediateSystemThinkingTrajectory,
-    IntermediateSystemTrajectory,
-    LongChainThinkingTrajectory,
-    LongChainTrajectory,
-    MultiToolSingleTurnTrajectory,
-    MultiTurnNoToolThinkingTrajectory,
-    MultiTurnNoToolTrajectory,
-    MultiTurnThinkingTrajectory,
-    MultiTurnTrajectory,
-    MultiUserToolChainTrajectory,
-    MultiUserTurnThinkingTrajectory,
-    ParallelToolsTrajectory,
-    RetrySystemTrajectory,
-    SingleToolThinkingTrajectory,
-    SingleToolTrajectory,
-)
+from miles.utils.test_utils.chat_template_verify import CaseSpec, expand_runs
+from miles.utils.test_utils.mock_trajectories import SimpleNoToolTrajectory, SingleToolTrajectory
 
 # ---------------------------------------------------------------------------
 # SGLang reference: calls OpenAIServingChat._process_messages directly
@@ -84,7 +69,7 @@ def sglang_prompt_ids(
 
 
 # ---------------------------------------------------------------------------
-# Tokenizer cache & fixtures
+# Tokenizer cache & fixed-template loader
 # ---------------------------------------------------------------------------
 
 _TOK_CACHE: dict[str, AutoTokenizer] = {}
@@ -96,111 +81,102 @@ def _get_tokenizer(model_id: str) -> AutoTokenizer:
     return _TOK_CACHE[model_id]
 
 
-_MODEL_IDS = [
-    "Qwen/Qwen3-4B",
-    "zai-org/GLM-4.7-Flash",
-    "Qwen/Qwen3.5-4B",
-    "Qwen/Qwen3-Coder-Next",
-]
-
-# Fixed chat templates — keyed by model ID, loaded from bundled .jinja files.
-_TEMPLATES_DIR = Path(__file__).resolve().parents[4] / "miles" / "utils" / "chat_template_utils" / "templates"
-_FIXED_CHAT_TEMPLATES: dict[str, str] = {
-    "Qwen/Qwen3.5-4B": (_TEMPLATES_DIR / "qwen3.5_fixed.jinja").read_text(),
-}
-
-
-@pytest.fixture(params=_MODEL_IDS, ids=[m.split("/")[-1] for m in _MODEL_IDS])
-def tokenizer(request) -> AutoTokenizer:
-    return _get_tokenizer(request.param)
+def _load_fixed_or_none(hf_id: str) -> str | None:
+    """Return the bundled fixed chat-template content for *hf_id*, or ``None``."""
+    path = try_get_fixed_chat_template(hf_id)
+    if path is None:
+        return None
+    with open(path) as f:
+        return f.read()
 
 
 # ---------------------------------------------------------------------------
-# Trajectory / kwargs definitions
+# Per-model declarations
+# ---------------------------------------------------------------------------
+#
+# (model_id, supports_thinking, use_fixed_template, allowed_append_roles)
+#
+# ``allowed_append_roles`` reflects the set of append-role combinations the
+# model's template can render without raising — test asserts that the
+# sglang path and our path produce identical tokens on all such cases.
+# Qwen3.5-4B uses the bundled fixed template which raises on intermediate
+# system post-revert, so the role set is narrowed to {tool} only.
+
+_MODELS: list[tuple[str, bool, bool, frozenset[str]]] = [
+    ("Qwen/Qwen3-4B", True, False, frozenset({"tool", "user", "system"})),
+    ("zai-org/GLM-4.7-Flash", True, False, frozenset({"tool", "user", "system"})),
+    ("Qwen/Qwen3.5-4B", True, True, frozenset({"tool"})),
+    ("Qwen/Qwen3-Coder-Next", False, False, frozenset({"tool", "user", "system"})),
+]
+
+
+def _kwargs_to_id(kwargs: dict) -> str:
+    if not kwargs:
+        return "default"
+    parts = []
+    for k, v in sorted(kwargs.items()):
+        if isinstance(v, bool):
+            parts.append(f"{k}_{'on' if v else 'off'}")
+        else:
+            parts.append(f"{k}={v}")
+    return "-".join(parts)
+
+
+def _build_align_params():
+    params = []
+    for model_id, supports_thinking, use_fixed, allowed_roles in _MODELS:
+        short = model_id.split("/")[-1]
+        for case, kwargs in expand_runs(supports_thinking=supports_thinking, allowed_append_roles=allowed_roles):
+            # SimpleNoTool ends with a plain assistant message (no tool_calls).
+            # sglang's _process_messages treats that as continue_final_message
+            # and drops the trailing <|im_start|>assistant header, which
+            # diverges from apply_chat_template with add_generation_prompt=True.
+            # Out of scope for the alignment test.
+            if case.traj_cls is SimpleNoToolTrajectory:
+                continue
+            ident = f"{short}-{case.case_name}-{_kwargs_to_id(kwargs)}"
+            params.append(pytest.param(model_id, use_fixed, case, kwargs, id=ident))
+    return params
+
+
+def _per_model_params():
+    return [pytest.param(model_id, use_fixed, id=model_id.split("/")[-1]) for model_id, _, use_fixed, _ in _MODELS]
+
+
+# ---------------------------------------------------------------------------
+# Tests
 # ---------------------------------------------------------------------------
 
-_NO_INTERMEDIATE_SYSTEM_MODELS = {
-    "Qwen/Qwen3.5-4B",
-}
 
-_STANDARD_CASES = [
-    pytest.param(SingleToolTrajectory, {}, id="single_tool"),
-    pytest.param(MultiTurnTrajectory, {}, id="multi_turn"),
-    pytest.param(MultiToolSingleTurnTrajectory, {}, id="multi_tool_single_turn"),
-    pytest.param(ParallelToolsTrajectory, {}, id="parallel_tools"),
-    pytest.param(LongChainTrajectory, {}, id="long_chain"),
-    pytest.param(MultiUserToolChainTrajectory, {}, id="multi_user_tool_chain"),
-    pytest.param(MultiTurnNoToolTrajectory, {}, id="multi_turn_no_tool"),
-]
-
-# Trajectories with intermediate system messages.
-_INTERMEDIATE_SYSTEM_CASES = [
-    pytest.param(RetrySystemTrajectory, {}, id="retry_system"),
-    pytest.param(IntermediateSystemTrajectory, {}, id="intermediate_system"),
-]
-
-_THINKING_CASES = [
-    pytest.param(SingleToolThinkingTrajectory, {"enable_thinking": True}, id="single_tool_thinking_on"),
-    pytest.param(SingleToolThinkingTrajectory, {"enable_thinking": False}, id="single_tool_thinking_off"),
-    pytest.param(MultiTurnThinkingTrajectory, {"enable_thinking": True}, id="multi_turn_thinking_on"),
-    pytest.param(LongChainThinkingTrajectory, {"enable_thinking": True}, id="long_chain_thinking_on"),
-    pytest.param(MultiUserTurnThinkingTrajectory, {"enable_thinking": True}, id="multi_user_turn_thinking_on"),
-    pytest.param(MultiTurnNoToolThinkingTrajectory, {"enable_thinking": True}, id="multi_turn_no_tool_thinking_on"),
-    pytest.param(MultiTurnNoToolThinkingTrajectory, {"enable_thinking": False}, id="multi_turn_no_tool_thinking_off"),
-]
-
-_INTERMEDIATE_SYSTEM_THINKING_CASES = [
-    pytest.param(
-        IntermediateSystemThinkingTrajectory, {"enable_thinking": True}, id="intermediate_system_thinking_on"
-    ),
-]
-
-
-# ---------------------------------------------------------------------------
-# Helper
-# ---------------------------------------------------------------------------
-
-
-def _assert_aligned(tokenizer, traj_cls, kwargs):
-    fixed_template = _FIXED_CHAT_TEMPLATES.get(tokenizer.name_or_path)
-    extra = {"chat_template": fixed_template} if fixed_template else {}
-    expected = sglang_prompt_ids(tokenizer, traj_cls.MESSAGES, traj_cls.TOOLS, **kwargs, **extra)
+def _assert_aligned(tokenizer, case: CaseSpec, kwargs: dict, chat_template: str | None):
+    extra = {"chat_template": chat_template} if chat_template else {}
+    expected = sglang_prompt_ids(tokenizer, case.traj_cls.MESSAGES, case.traj_cls.TOOLS, **kwargs, **extra)
     actual = apply_chat_template(
-        traj_cls.MESSAGES, tokenizer=tokenizer, tools=traj_cls.TOOLS, tokenize=True, **kwargs, **extra
+        case.traj_cls.MESSAGES,
+        tokenizer=tokenizer,
+        tools=case.traj_cls.TOOLS,
+        tokenize=True,
+        **kwargs,
+        **extra,
     )
     assert actual == expected
-
-
-# ---------------------------------------------------------------------------
-# Tests — parametrized over models × trajectories
-# ---------------------------------------------------------------------------
 
 
 class TestAlignWithSGLang:
     """apply_chat_template must produce identical prompt_ids to SGLang's pipeline."""
 
-    @pytest.mark.parametrize("traj_cls, kwargs", _STANDARD_CASES)
-    def test_standard(self, tokenizer, traj_cls, kwargs):
-        _assert_aligned(tokenizer, traj_cls, kwargs)
+    @pytest.mark.parametrize("model_id, use_fixed, case, kwargs", _build_align_params())
+    def test_align(self, model_id, use_fixed, case, kwargs):
+        tokenizer = _get_tokenizer(model_id)
+        chat_template = _load_fixed_or_none(model_id) if use_fixed else None
+        _assert_aligned(tokenizer, case, kwargs, chat_template)
 
-    @pytest.mark.parametrize("traj_cls, kwargs", _INTERMEDIATE_SYSTEM_CASES)
-    def test_intermediate_system(self, tokenizer, traj_cls, kwargs):
-        if tokenizer.name_or_path in _NO_INTERMEDIATE_SYSTEM_MODELS:
-            pytest.skip(f"{tokenizer.name_or_path} intentionally forbids intermediate system messages")
-        _assert_aligned(tokenizer, traj_cls, kwargs)
-
-    @pytest.mark.parametrize("traj_cls, kwargs", _THINKING_CASES)
-    def test_thinking(self, tokenizer, traj_cls, kwargs):
-        _assert_aligned(tokenizer, traj_cls, kwargs)
-
-    @pytest.mark.parametrize("traj_cls, kwargs", _INTERMEDIATE_SYSTEM_THINKING_CASES)
-    def test_intermediate_system_thinking(self, tokenizer, traj_cls, kwargs):
-        if tokenizer.name_or_path in _NO_INTERMEDIATE_SYSTEM_MODELS:
-            pytest.skip(f"{tokenizer.name_or_path} intentionally forbids intermediate system messages")
-        _assert_aligned(tokenizer, traj_cls, kwargs)
-
-    def test_json_string_arguments(self, tokenizer):
+    @pytest.mark.parametrize("model_id, use_fixed", _per_model_params())
+    def test_json_string_arguments(self, model_id, use_fixed):
         """JSON-string tool_call arguments should produce same IDs as dict arguments."""
+        tokenizer = _get_tokenizer(model_id)
+        chat_template = _load_fixed_or_none(model_id) if use_fixed else None
+        extra = {"chat_template": chat_template} if chat_template else {}
         messages = [
             {"role": "user", "content": "weather?"},
             {
@@ -225,25 +201,27 @@ class TestAlignWithSGLang:
                 },
             }
         ]
-        fixed_template = _FIXED_CHAT_TEMPLATES.get(tokenizer.name_or_path)
-        extra = {"chat_template": fixed_template} if fixed_template else {}
         expected = sglang_prompt_ids(tokenizer, messages, tools, **extra)
         actual = apply_chat_template(messages, tokenizer=tokenizer, tools=tools, tokenize=True, **extra)
         assert actual == expected
 
-    def test_no_tools(self, tokenizer):
+    @pytest.mark.parametrize("model_id, use_fixed", _per_model_params())
+    def test_no_tools(self, model_id, use_fixed):
         """Plain conversation without tools."""
+        tokenizer = _get_tokenizer(model_id)
+        chat_template = _load_fixed_or_none(model_id) if use_fixed else None
+        extra = {"chat_template": chat_template} if chat_template else {}
         messages = [
             {"role": "system", "content": "You are helpful."},
             {"role": "user", "content": "Hello"},
         ]
-        fixed_template = _FIXED_CHAT_TEMPLATES.get(tokenizer.name_or_path)
-        extra = {"chat_template": fixed_template} if fixed_template else {}
         expected = sglang_prompt_ids(tokenizer, messages, **extra)
         actual = apply_chat_template(messages, tokenizer=tokenizer, tokenize=True, **extra)
         assert actual == expected
 
-    def test_does_not_mutate_input(self, tokenizer):
+    @pytest.mark.parametrize("model_id, use_fixed", _per_model_params())
+    def test_does_not_mutate_input(self, model_id, use_fixed):
+        tokenizer = _get_tokenizer(model_id)
         messages = copy.deepcopy(SingleToolTrajectory.MESSAGES)
         tools = copy.deepcopy(SingleToolTrajectory.TOOLS)
         saved_msgs = copy.deepcopy(messages)
