@@ -524,10 +524,7 @@ class MegatronTrainRayActor(TrainRayActor):
 
         if self.args.debug_skip_weight_update:
             if dist.get_rank() == 0:
-                logger.warning(
-                    "Skipping actor-to-rollout weight update because "
-                    "--debug-skip-weight-update is set."
-                )
+                logger.warning("Skipping actor-to-rollout weight update because " "--debug-skip-weight-update is set.")
             if self.args.offload_train:
                 destroy_process_groups()
             return
