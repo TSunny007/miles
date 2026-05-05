@@ -27,6 +27,29 @@ def _make_mock_args(*, indep_dp: bool = True, enable_witness: bool = False) -> M
     return args
 
 
+@pytest.fixture(autouse=True)
+def _patch_actor_alloc():
+    """Persist patches across the whole test (incl. healing-path actor reallocations).
+
+    Previously _make_group used `with patch(...)` which expired when _make_group
+    returned, so any later `allocate_gpus_for_actor` call during _refresh_cells
+    healing hit the real implementation (which dereferences mock args fields).
+    """
+
+    def _alloc(*, gpus_per_cell: int, num_gpus_per_actor: float, **_kwargs) -> list:
+        actor_count = max(int(gpus_per_cell // num_gpus_per_actor), 1)
+        return [DummyTrainActor.remote() for _ in range(actor_count)]
+
+    with patch(
+        "miles.ray.train.group.compute_megatron_world_size_except_dp",
+        return_value=1,
+    ), patch(
+        "miles.ray.train.group.allocate_gpus_for_actor",
+        side_effect=_alloc,
+    ):
+        yield
+
+
 def _make_group(
     *,
     num_cells: int = 3,
@@ -34,23 +57,16 @@ def _make_group(
     rollout_manager: object | None = None,
 ) -> RayTrainGroup:
     """Create a RayTrainGroup through real __init__ with mocked pg and actor factory."""
-    with patch(
-        "miles.ray.train.group.compute_megatron_world_size_except_dp",
-        return_value=1,
-    ), patch(
-        "miles.ray.train.group.allocate_gpus_for_actor",
-        side_effect=lambda **kwargs: [DummyTrainActor.remote() for _ in range(actor_count_per_cell)],
-    ):
-        group = RayTrainGroup(
-            args=_make_mock_args(indep_dp=True),
-            num_nodes=1,
-            num_gpus_per_node=num_cells,
-            pg=(MagicMock(), list(range(num_cells)), list(range(num_cells))),
-            role="actor",
-            with_ref=False,
-            rollout_manager=rollout_manager,
-        )
-    return group
+    total_gpus = num_cells * actor_count_per_cell
+    return RayTrainGroup(
+        args=_make_mock_args(indep_dp=True),
+        num_nodes=1,
+        num_gpus_per_node=total_gpus,
+        pg=(MagicMock(), list(range(total_gpus)), list(range(total_gpus))),
+        role="actor",
+        with_ref=False,
+        rollout_manager=rollout_manager,
+    )
 
 
 async def _init_group(group: RayTrainGroup) -> None:

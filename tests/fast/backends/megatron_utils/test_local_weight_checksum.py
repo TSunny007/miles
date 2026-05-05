@@ -213,7 +213,7 @@ class TestFailFastAssertions:
         param = torch.randn(2, 2)
         chunk.named_parameters.return_value = [("weight", param)]
 
-        with pytest.raises(AssertionError, match="no main_param"):
+        with pytest.raises(AssertionError, match="main_param is None"):
             _build_name_by_tensor_id([chunk])
 
     def test_assert_unmapped_fp32_param_fails(self) -> None:

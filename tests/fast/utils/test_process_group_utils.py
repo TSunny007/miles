@@ -205,15 +205,18 @@ class TestRawPGUtilUnit:
         _RawPGUtil().all_reduce(tensor, group, op=dist.ReduceOp.SUM)
         group.allreduce.assert_called_once()
 
-    @patch("miles.utils.process_group_utils.dist.ReduceOptions", MagicMock)
-    def test_reduce_calls_group_reduce(self) -> None:
+    @patch("miles.utils.process_group_utils.dist.AllreduceOptions", MagicMock)
+    def test_reduce_falls_back_to_group_allreduce(self) -> None:
+        # _RawPGUtil.reduce intentionally redirects to all_reduce because torchft's
+        # ProcessGroupWrapper doesn't override reduce() — see implementation comment.
         group = MagicMock()
         work = MagicMock()
         work.wait.return_value = True
-        group.reduce.return_value = work
+        group.allreduce.return_value = work
         tensor = torch.tensor([1.0])
         _RawPGUtil().reduce(tensor, group, op=dist.ReduceOp.SUM)
-        group.reduce.assert_called_once()
+        group.allreduce.assert_called_once()
+        group.reduce.assert_not_called()
 
     @patch("miles.utils.process_group_utils.dist.BroadcastOptions", MagicMock)
     def test_broadcast_calls_group_broadcast(self) -> None:

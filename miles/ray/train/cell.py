@@ -151,6 +151,11 @@ class RayTrainCell:
     def _mark_as_errored(self) -> None:
         # NOTE: do NOT kill actors here — external ft controller may need the actors
         # to be still there for stacktrace diagnostics before calling stop() to kill them
+        # Validate state BEFORE building the new state, otherwise StateAllocatedUninitialized
+        # has no `indep_dp_info` and we'd raise AttributeError instead of the expected AssertionError.
+        assert isinstance(self._state, (StateAllocatedAlive, StateAllocatedErrored)), (
+            f"{self.cell_index=} {self._state=}"
+        )
         self._change_state(
             "_mark_as_errored",
             (StateAllocatedAlive, StateAllocatedErrored),

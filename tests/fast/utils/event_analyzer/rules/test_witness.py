@@ -87,7 +87,7 @@ class TestWitnessCheck:
         events: list[Event] = [
             _make_rollout_completed(rollout_id=0, sample_indices=[0, 1]),
             _make_allocate(rollout_id=0, witness_id_to_sample_index={10: 0, 11: 1}),
-            _make_snapshot(rollout_id=0, nonzero_witness_ids=[[10], [11]]),
+            _make_snapshot(rollout_id=0, nonzero_witness_ids=[10, 11]),
             _make_step_end(rollout_id=0, cell_outcomes={0: [TrainStepOutcome.NORMAL]}),
         ]
         assert check(events) == []
@@ -141,8 +141,8 @@ class TestWitnessCheck:
         events: list[Event] = [
             _make_rollout_completed(rollout_id=0, sample_indices=[0, 1]),
             _make_allocate(rollout_id=0, witness_id_to_sample_index={10: 0, 11: 1}),
-            _make_snapshot(rollout_id=0, nonzero_witness_ids=[[10], [11]], cell_index=0),
-            _make_snapshot(rollout_id=0, nonzero_witness_ids=[[10], [11]], cell_index=1),
+            _make_snapshot(rollout_id=0, nonzero_witness_ids=[10, 11], cell_index=0),
+            _make_snapshot(rollout_id=0, nonzero_witness_ids=[10, 11], cell_index=1),
             _make_step_end(rollout_id=0, cell_outcomes={0: [TrainStepOutcome.NORMAL], 1: [TrainStepOutcome.NORMAL]}),
         ]
         assert check(events) == []
@@ -167,7 +167,7 @@ class TestWitnessCheck:
             _make_step_end(rollout_id=0, cell_outcomes={0: [TrainStepOutcome.NORMAL]}),
             _make_rollout_completed(rollout_id=1, sample_indices=[1]),
             _make_allocate(rollout_id=1, witness_id_to_sample_index={11: 1}),
-            _make_snapshot(rollout_id=1, nonzero_witness_ids=[[10], [11]]),
+            _make_snapshot(rollout_id=1, nonzero_witness_ids=[10, 11]),
             _make_step_end(rollout_id=1, cell_outcomes={0: [TrainStepOutcome.NORMAL]}),
         ]
         assert check(events) == []
