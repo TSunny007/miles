@@ -502,20 +502,6 @@ class DeepSeekV4TITOTokenizer(TITOTokenizer):
             trim_trailing_ids=self.trailing_token_ids or None,
         )
 
-    def _split_appended_segments(self, appended_messages: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
-        segments: list[list[dict[str, Any]]] = []
-        i = 0
-        while i < len(appended_messages):
-            role = appended_messages[i]["role"]
-            if role != "tool":
-                raise ValueError(f"unsupported appended role for DeepSeek V4 TITO tokenization: {role}")
-            j = i + 1
-            while j < len(appended_messages) and appended_messages[j]["role"] == "tool":
-                j += 1
-            segments.append(appended_messages[i:j])
-            i = j
-        return segments
-
 
 # ---------------------------------------------------------------------------
 # Enum + Registry + Factory
