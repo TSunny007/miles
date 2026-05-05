@@ -31,14 +31,15 @@ def create_indep_dp_group(
     except ImportError as e:
         raise ImportError("torchft is required for indep_dp. Install with: pip install torchft") from e
 
-    # Long timeout for both configure and initial operations: during healing,
-    # the new cell does model init + recv_ckpt after PG configure, which can
-    # take several minutes. The shorter operation timeout is set later via
-    # set_indep_dp_operation_timeout() before the first allreduce.
-    _INIT_TIMEOUT = timedelta(seconds=600)
+    _OPERATION_TIMEOUT = timedelta(seconds=120)
+    # configure() needs a long timeout because it waits for ALL cells to reach
+    # the same configure call (NCCL/Gloo handshake). During healing, the new
+    # cell does a full Megatron init before reaching configure, which can take
+    # several minutes. After configure, we reset to the shorter operation timeout.
+    _CONFIGURE_TIMEOUT = timedelta(seconds=600)
 
     def _create(pg_cls: type, backend_name: str) -> dist.ProcessGroup:
-        pg = pg_cls(timeout=_INIT_TIMEOUT)
+        pg = pg_cls(timeout=_CONFIGURE_TIMEOUT)
         pg.configure(
             store_addr=f"{store_addr}/indep_dp/{backend_name}/{indep_dp_info.quorum_id}/{megatron_rank}",
             replica_id=str(indep_dp_info.cell_index),
@@ -48,6 +49,7 @@ def create_indep_dp_group(
             group_rank=megatron_rank,
             group_world_size=megatron_world_size,
         )
+        pg.set_timeout(_OPERATION_TIMEOUT)
         return pg
 
     nccl_pg = _create(ProcessGroupNCCL, "nccl")
@@ -79,20 +81,6 @@ def reconfigure_indep_dp_group(
         megatron_world_size=megatron_world_size,
     )
     logger.info(f"Reconfigured indep_dp PG with quorum_id={indep_dp_info.quorum_id}")
-
-
-_OPERATION_TIMEOUT = timedelta(seconds=120)
-
-
-def set_indep_dp_operation_timeout(parallel_state: ParallelState) -> None:
-    """Set the shorter operation timeout on indep_dp PGs.
-
-    Called before the first allreduce, after healing init + recv_ckpt are done.
-    """
-    indep_dp = parallel_state.indep_dp
-    for pg in [indep_dp.group, indep_dp.gloo_group]:
-        if pg is not None:
-            pg.set_timeout(_OPERATION_TIMEOUT)
 
 
 def _allreduce_grads_across_replicas(args, model: Sequence["DDP"], parallel_state: ParallelState) -> bool:
