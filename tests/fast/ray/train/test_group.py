@@ -1,4 +1,5 @@
 from collections.abc import Callable
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -19,22 +20,25 @@ def _make_mock_args(
     indep_dp: bool = True,
     enable_witness: bool = False,
     gpus_per_cell: int = 1,
-) -> MagicMock:
-    args = MagicMock()
-    args.indep_dp = indep_dp
-    args.enable_witness = enable_witness
-    args.witness_buffer_size = 100
-    args.trainer_heartbeat_checker_interval = 30.0
-    args.trainer_heartbeat_checker_timeout = 10.0
-    args.trainer_heartbeat_checker_max_heartbeat_age = 90.0
-    args.trainer_heartbeat_checker_first_wait = 300.0
-    args.ci_ft_test_actions = None
-    # compute_megatron_world_size_except_dp(args) = TP * PP * CP. Set CP to gpus_per_cell
-    # so RayTrainGroup computes num_cells = total_gpus // gpus_per_cell correctly.
-    args.tensor_model_parallel_size = 1
-    args.pipeline_model_parallel_size = 1
-    args.context_parallel_size = gpus_per_cell
-    return args
+) -> SimpleNamespace:
+    # Use SimpleNamespace (not MagicMock) so the args object is picklable. RayTrainCell.init
+    # passes self.args through Ray to the remote actor; pickling a MagicMock blows the
+    # recursion limit because its __getattr__ creates new sub-mocks indefinitely.
+    return SimpleNamespace(
+        indep_dp=indep_dp,
+        enable_witness=enable_witness,
+        witness_buffer_size=100,
+        trainer_heartbeat_checker_interval=30.0,
+        trainer_heartbeat_checker_timeout=10.0,
+        trainer_heartbeat_checker_max_heartbeat_age=90.0,
+        trainer_heartbeat_checker_first_wait=300.0,
+        ci_ft_test_actions=None,
+        # compute_megatron_world_size_except_dp(args) = TP * PP * CP. Set CP to
+        # gpus_per_cell so RayTrainGroup computes num_cells correctly.
+        tensor_model_parallel_size=1,
+        pipeline_model_parallel_size=1,
+        context_parallel_size=gpus_per_cell,
+    )
 
 
 @pytest.fixture(autouse=True)
