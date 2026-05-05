@@ -3,19 +3,19 @@ blobfile
 datasets
 httpx[http2]
 mcp[cli]
-memray  # needed for debugging (but is lightweight), we can put it to dev mode when using pyproject.toml
+memray
 omegaconf
 pillow
 pybase64
 pylatexenc
 pytest-asyncio
 pyyaml
-qwen_vl_utils # for VLM
+qwen_vl_utils
 ray[default]
-ring_flash_attn
+ring_flash_attn; platform_system == "Linux" and platform_machine == "x86_64"
 sglang-router>=0.2.3
 tensorboard
-nvidia-resiliency-ext
-torchft-nightly==2026.4.3
+nvidia-resiliency-ext; platform_system == "Linux" and platform_machine == "x86_64"
+torchft-nightly==2026.4.3; platform_system == "Linux" and platform_machine == "x86_64"
 transformers
 wandb
