@@ -3,14 +3,14 @@ blobfile
 datasets
 httpx[http2]
 mcp[cli]
-memray
+memray  # needed for debugging (but is lightweight), we can put it to dev mode when using pyproject.toml
 omegaconf
 pillow
 pybase64
 pylatexenc
 pytest-asyncio
 pyyaml
-qwen_vl_utils
+qwen_vl_utils # for VLM
 ray[default]
 ring_flash_attn; platform_system == "Linux"
 sglang-router>=0.2.3

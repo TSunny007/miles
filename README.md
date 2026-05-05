@@ -89,12 +89,10 @@ We recommend using our official Docker image for the best performance and compat
 # Pull the latest image
 docker pull radixark/miles:latest
 
-# Or install from source on Linux with Python 3.10-3.12
+# Or install from source
 pip install -r requirements.txt
 pip install -e .
 ```
-
-On non-Linux development machines, `requirements.txt` skips Linux/NVIDIA-only packages so IDE indexing and lightweight local tooling can still install the project dependencies. Training and test runs should use the supported Docker or remote GPU environment.
 
 ### Launch Training
 

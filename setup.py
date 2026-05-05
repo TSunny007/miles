@@ -1,21 +1,13 @@
 import sys
 import platform
-from pathlib import Path
 
 from setuptools import find_packages, setup
 from wheel.bdist_wheel import bdist_wheel as _bdist_wheel
 
 
-def _fetch_requirements(path: Path) -> list[str]:
-    with path.open() as fd:
-        requirements: list[str] = []
-
-        for line in fd.readlines():
-            requirement = line.split("#", maxsplit=1)[0].strip()
-            if requirement:
-                requirements.append(requirement)
-
-        return requirements
+def _fetch_requirements(path):
+    with open(path) as fd:
+        return [r.strip() for r in fd.readlines() if r.strip() and not r.startswith("#")]
 
 
 # Custom wheel class to modify the wheel name
@@ -43,13 +35,13 @@ setup(
     version="0.2.1",
     packages=find_packages(include=["miles*", "miles_plugins*"]),
     include_package_data=True,
-    install_requires=_fetch_requirements(Path("requirements.txt")),
+    install_requires=_fetch_requirements("requirements.txt"),
     extras_require={
         "fsdp": [
             "torch>=2.0",
         ]
     },
-    python_requires=">=3.10,<3.13",
+    python_requires=">=3.10",
     classifiers=[
         "Programming Language :: Python :: 3.10",
         "Programming Language :: Python :: 3.11",
