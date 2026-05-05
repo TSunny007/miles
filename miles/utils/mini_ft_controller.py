@@ -11,7 +11,7 @@ from typing import Any
 
 import httpx
 
-from miles.utils.control_server.models import Cell, CellList, CellPatch, CellPatchSpec
+from miles.utils.control_server.models import Cell, CellList, CellPatch, CellPatchSpec, TriState
 from miles.utils.pydantic_utils import StrictBaseModel
 
 logger = logging.getLogger(__name__)
@@ -91,10 +91,10 @@ def _compute_cell_snapshot(cell: Cell) -> _CellSnapshot:
     healthy_conditions = [c for c in cell.status.conditions if c.type == "Healthy"]
     if not healthy_conditions:
         status = CellHealthStatus.NOT_APPLICABLE
-    elif any(c.status == "True" for c in healthy_conditions):
-        status = CellHealthStatus.HEALTHY
-    else:
+    elif any(c.status == TriState.FALSE for c in healthy_conditions):
         status = CellHealthStatus.UNHEALTHY
+    else:
+        status = CellHealthStatus.HEALTHY
     return _CellSnapshot(name=cell.metadata.name, status=status)
 
 

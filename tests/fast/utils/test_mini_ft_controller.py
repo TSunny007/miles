@@ -9,7 +9,14 @@ from unittest.mock import AsyncMock, MagicMock
 import httpx
 import pytest
 
-from miles.utils.mini_ft_controller import CellHealthStatus, _CellSnapshot, _MiniFTController, _MiniFTControllerRunner
+from miles.utils.control_server.models import Cell, CellCondition, CellMetadata, CellSpec, CellStatus, TriState
+from miles.utils.mini_ft_controller import (
+    CellHealthStatus,
+    _CellSnapshot,
+    _compute_cell_snapshot,
+    _MiniFTController,
+    _MiniFTControllerRunner,
+)
 
 
 # ------------------------ helpers ------------------------
@@ -125,6 +132,66 @@ def _mock_response(*, status_code: int = 200, json_data: Any = None) -> httpx.Re
             response=response,
         )
     return response
+
+
+# ------------------------ snapshot tests ------------------------
+
+
+def _make_cell_object(*, name: str = "actor-0", healthy: list[CellCondition] | None = None) -> Cell:
+    conditions: list[CellCondition] = [CellCondition.allocated(TriState.TRUE)]
+    if healthy is not None:
+        conditions.extend(healthy)
+    return Cell(
+        metadata=CellMetadata(name=name, labels={}),
+        spec=CellSpec(),
+        status=CellStatus(phase="Running", conditions=conditions),
+    )
+
+
+class TestComputeCellSnapshot:
+    def test_healthy_true_maps_to_healthy(self):
+        cell = _make_cell_object(healthy=[CellCondition.healthy(TriState.TRUE)])
+
+        snapshot = _compute_cell_snapshot(cell)
+
+        assert snapshot == _CellSnapshot(name="actor-0", status=HEALTHY)
+
+    def test_healthy_false_maps_to_unhealthy(self):
+        cell = _make_cell_object(healthy=[CellCondition.healthy(TriState.FALSE, reason="HealthCheckFailed")])
+
+        snapshot = _compute_cell_snapshot(cell)
+
+        assert snapshot == _CellSnapshot(name="actor-0", status=UNHEALTHY)
+
+    def test_healthy_unknown_does_not_trigger_heal(self):
+        """Regression: UNKNOWN is a transient state (e.g. health checker paused
+        during healing); controller must not treat it as unhealthy and reconcile."""
+        cell = _make_cell_object(healthy=[CellCondition.healthy(TriState.UNKNOWN, reason="HealthCheckUnknown")])
+
+        snapshot = _compute_cell_snapshot(cell)
+
+        assert snapshot.status != UNHEALTHY
+
+    def test_missing_healthy_condition_maps_to_not_applicable(self):
+        cell = _make_cell_object(healthy=None)
+
+        snapshot = _compute_cell_snapshot(cell)
+
+        assert snapshot == _CellSnapshot(name="actor-0", status=NOT_APPLICABLE)
+
+    def test_any_false_among_multiple_conditions_wins(self):
+        """If any Healthy condition is FALSE, the cell is unhealthy regardless of
+        other TRUE/UNKNOWN conditions — fail-loud over fail-quiet."""
+        cell = _make_cell_object(
+            healthy=[
+                CellCondition.healthy(TriState.TRUE),
+                CellCondition.healthy(TriState.FALSE),
+            ]
+        )
+
+        snapshot = _compute_cell_snapshot(cell)
+
+        assert snapshot.status == UNHEALTHY
 
 
 # ------------------------ controller tests ------------------------
