@@ -1,7 +1,7 @@
 """Contract test: prevents MockSGLangEngine from drifting away from the
 real SGLangEngine API used by miles/ray/rollout/.
 
-Without this test, every other lifecycle test ends up testing the mock
+Without this test, every other real_ray test ends up testing the mock
 itself rather than the real code path."""
 
 from __future__ import annotations
@@ -13,7 +13,7 @@ from pathlib import Path
 import pytest
 
 from miles.backends.sglang_utils.sglang_engine import SGLangEngine
-from tests.fast.ray.rollout.lifecycle.mock_engine import MockSGLangEngine
+from tests.fast.ray.rollout.real_ray.mock_engine import MockSGLangEngine
 
 
 ROLLOUT_DIR = Path(__file__).resolve().parents[5] / "miles" / "ray" / "rollout"

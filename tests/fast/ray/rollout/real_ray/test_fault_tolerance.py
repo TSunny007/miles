@@ -1,12 +1,10 @@
 """Fault tolerance — real ``ray.kill`` injects the fault, real ``recover()``
 restores the engine.
 
-This is the highest-value file in the lifecycle/ rewrite: the original
-mock-driven tests can't simulate "actor dies for real" because
-``fake_actor_handle()`` is just a MagicMock that never enters the Ray
-scheduler. Here, we drive ``ServerGroup.recover()`` after ``ray.kill``ing
-a real ``MockSGLangEngine`` actor, so the recovery path runs against
-genuinely-dead handles."""
+A MagicMock-only ``actor_handle`` never enters the Ray scheduler, so it
+can't simulate "actor dies for real". Here we drive ``ServerGroup.recover()``
+after ``ray.kill``ing a real ``MockSGLangEngine`` actor, so the recovery
+path runs against genuinely-dead handles."""
 
 from __future__ import annotations
 

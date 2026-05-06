@@ -1,8 +1,7 @@
 """``ServerGroup`` lifecycle driven through real Ray actors with MockSGLangEngine.
 
-Covers the same surface as the older mock-only `test_server_group_lifecycle.py`
-plus the real-Ray bits that mocking can't reach: actual actor creation, real
-init handle await, real ``ray.kill`` + ``RayActorError`` on followup.
+Real-Ray bits that mocking can't reach: actual actor creation, real init
+handle await, real ``ray.kill`` + ``RayActorError`` on followup.
 
 The ``patched_sglang_engine`` fixture (in ``conftest.py``) substitutes
 ``SGLangEngine`` with the unwrapped MockSGLangEngine class inside

@@ -1,4 +1,4 @@
-"""Shared fixtures for lifecycle/ tests that drive real Ray actors with
+"""Shared fixtures for real_ray/ tests that drive real Ray actors with
 ``MockSGLangEngine`` (no GPU, no real sglang).
 
 Two fixtures:
@@ -84,7 +84,7 @@ def mock_engine_class(ray_cluster):
     already-wrapped MockSGLangEngine would double-wrap and fail; so callers
     monkeypatch ``SGLangEngine`` (the unwrapped class) inside
     ``miles.ray.rollout.server_group``."""
-    from tests.fast.ray.rollout.lifecycle.mock_engine import MockSGLangEngine
+    from tests.fast.ray.rollout.real_ray.mock_engine import MockSGLangEngine
     return MockSGLangEngine.__ray_actor_class__
 
 
