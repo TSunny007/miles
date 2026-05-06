@@ -29,11 +29,18 @@ def patch_low_level(monkeypatch):
       ``load_function`` / ``load_rollout_function`` → no-ops (the production
       defaults touch wandb / network / not-importable default function paths)."""
     import miles.ray.rollout.rollout_manager as rmgr
+    import miles.ray.rollout.rollout_server as rsrv
     import miles.ray.rollout.server_group as sg
     from miles.ray.rollout.addr_allocator import PortCursors
     from miles.utils.test_utils.mock_sglang_engine import MockSGLangEngine
 
     monkeypatch.setattr(sg, "SGLangEngine", MockSGLangEngine.__ray_actor_class__)
+    # multi-model tests would otherwise spawn a real router subprocess for
+    # ``model_idx > 0`` (force_new=True bypasses the args.sglang_router_ip cache).
+    monkeypatch.setattr(
+        rsrv, "start_router",
+        lambda args, **kw: (args.sglang_router_ip, args.sglang_router_port),
+    )
 
     def _fake_alloc(*args, **kwargs):
         engines = kwargs["rollout_engines"]
