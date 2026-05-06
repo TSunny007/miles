@@ -1,6 +1,3 @@
-"""``ServerGroup`` lifecycle driven through real Ray actors. Covers actor
-creation, init handle await, and real ``ray.kill`` + ``RayActorError``."""
-
 from __future__ import annotations
 
 import pytest
