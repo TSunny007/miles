@@ -8,7 +8,20 @@ from miles.ray.rollout.router_manager import start_router, start_session_server
 from tests.fast.ray.rollout.conftest import make_args
 
 
-class TestRouterManagerErrorPaths:
+class TestStartRouter:
+    def test_returns_existing_when_already_configured(self):
+        """Happy path: ``sglang_router_ip`` and ``sglang_router_port`` are
+        already set and ``force_new=False`` → skip subprocess launch entirely
+        and return the existing tuple."""
+        args = make_args(
+            use_miles_router=False,
+            sglang_router_ip="10.1.2.3",
+            sglang_router_port=4567,
+        )
+        # No mocks needed — the function returns before touching anything.
+        ip, port = start_router(args, force_new=False)
+        assert (ip, port) == ("10.1.2.3", 4567)
+
     def test_pd_disagg_with_miles_router_asserts(self):
         args = make_args(use_miles_router=True, sglang_router_ip=None, sglang_router_port=None)
         with patch("miles.ray.rollout.router_manager.get_host_info", return_value=("h", "127.0.0.1")), \
@@ -24,19 +37,22 @@ class TestRouterManagerErrorPaths:
             with pytest.raises(RuntimeError, match="already in use"):
                 start_router(args)
 
-    def test_session_server_disabled_returns_silently(self):
+
+class TestStartSessionServer:
+    def test_disabled_returns_silently(self):
+        """Happy no-op: ``use_session_server=False`` → return without raising,
+        without touching any other config."""
         args = make_args(use_session_server=False)
         start_session_server(args)
 
-    def test_session_server_without_hf_checkpoint_raises(self):
+    def test_enabled_without_hf_checkpoint_raises(self):
         args = make_args(use_session_server=True, hf_checkpoint=None)
         with pytest.raises(ValueError, match="hf-checkpoint"):
             start_session_server(args)
 
-    def test_session_server_port_conflict_raises_runtime_error(self):
-        """Symmetric to start_router's port-conflict path: when the configured
-        session_server port is already bound, fail loud rather than silently
-        re-using the stale process."""
+    def test_enabled_port_conflict_raises_runtime_error(self):
+        """When the configured ``session_server_port`` is already bound, fail
+        loud rather than silently re-using the stale process."""
         args = make_args(
             use_session_server=True,
             hf_checkpoint="/fake/model",
