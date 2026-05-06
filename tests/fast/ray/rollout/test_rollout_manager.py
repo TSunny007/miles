@@ -1,6 +1,3 @@
-"""Pure-Python tests for ``rollout_manager`` routing helpers. Tests that need
-real Ray actors live in ``real_ray/test_rollout_manager.py``."""
-
 from __future__ import annotations
 
 import asyncio
