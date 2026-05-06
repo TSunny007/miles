@@ -1,11 +1,15 @@
 """``RolloutManager`` cell dispatch + ``EnginesAndLock`` flow driven through
-the production ``RolloutManager`` actor (no subclassing).
+the production ``RolloutManager`` actor.
 
-The Ray worker is configured via ``runtime_env={"worker_process_setup_hook": ...}``
-to patch the engine-spawning + subprocess-launching seams *inside the worker*
-before any actor method runs. ``RolloutManager.__init__`` and
-``start_rollout_servers`` then execute end-to-end against ``MockSGLangEngine``
-actors.
+Why ``_PatchedRolloutManager`` exists (a 6-line @ray.remote subclass of
+``RolloutManager``): Ray actor methods run in *separate worker processes*
+from the test driver, so ``monkeypatch`` in the test process can't reach
+them. The standard mechanism for "run code in the worker before
+``__init__``" is a per-actor subclass that does the patches in its own
+``__init__`` and then calls ``super().__init__``. Ray's other escape hatch
+— ``runtime_env={"worker_process_setup_hook": ...}`` — is only supported at
+``ray.init()`` level, which would impose the patches on every actor in the
+shared test session.
 
 Pure routing/flag-flip helpers without Ray content live in
 ``tests/fast/ray/rollout/test_rollout_manager.py``."""
@@ -21,14 +25,13 @@ from miles.ray.rollout.rollout_manager import RolloutManager
 from tests.fast.ray.rollout.conftest import make_args
 
 
-def _worker_setup_for_rollout_manager_test() -> None:
-    """Worker-process startup hook. Replaces in the worker:
+def _patch_low_level_in_current_process() -> None:
+    """Run inside the worker before ``RolloutManager.__init__``. Replaces:
     - ``SGLangEngine`` → ``MockSGLangEngine`` so created actors are mocks.
     - addr allocator → deterministic stub.
     - ``init_tracking`` / ``init_http_client`` / ``start_session_server`` /
-      ``load_function`` / ``load_rollout_function`` → no-ops (so the
-      ``RolloutManager.__init__`` paths that touch wandb / network /
-      not-importable default function paths don't blow up)."""
+      ``load_function`` / ``load_rollout_function`` → no-ops (the production
+      defaults touch wandb / network / not-importable default function paths)."""
     import miles.ray.rollout.rollout_manager as rmgr
     import miles.ray.rollout.server_group as sg
     from miles.ray.rollout.addr_allocator import PortCursors
@@ -61,18 +64,18 @@ def _worker_setup_for_rollout_manager_test() -> None:
     rmgr.load_rollout_function = lambda input, path: lambda *a, **kw: None
 
 
-_WORKER_HOOK_PATH = (
-    "tests.fast.ray.rollout.real_ray.test_rollout_manager."
-    "_worker_setup_for_rollout_manager_test"
-)
+@ray.remote
+class _PatchedRolloutManager(RolloutManager.__ray_actor_class__):
+    """Real production ``RolloutManager``; the only override is to apply the
+    worker-process patches before super().__init__ runs."""
+
+    def __init__(self, args, pg):
+        _patch_low_level_in_current_process()
+        super().__init__(args, pg)
 
 
 def _make_manager(args, pg):
-    """Spawn ``RolloutManager`` (production class — no subclass) on a worker
-    that has been patched via the runtime_env setup hook."""
-    return RolloutManager.options(
-        runtime_env={"worker_process_setup_hook": _WORKER_HOOK_PATH}
-    ).remote(args, pg)
+    return _PatchedRolloutManager.remote(args, pg)
 
 
 def _write_sglang_config(tmp_path, *, models: list[tuple[str, bool]]) -> str:
