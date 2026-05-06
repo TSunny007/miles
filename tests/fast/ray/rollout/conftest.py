@@ -189,28 +189,6 @@ def make_sglang_config_yaml(
 # --------------------------- ray fixtures ---------------------------
 
 
-@pytest.fixture(scope="session")
-def ray_local_mode():
-    """Session-scoped Ray init. On CI ``RAY_ADDRESS`` points at an existing
-    cluster, so we connect without ``num_cpus`` (Ray rejects it when joining).
-    Tests that only need pure-Python helpers should not depend on this."""
-    import os
-
-    import ray
-
-    if not ray.is_initialized():
-        kwargs: dict = dict(
-            ignore_reinit_error=True,
-            include_dashboard=False,
-            log_to_driver=False,
-        )
-        if not os.environ.get("RAY_ADDRESS"):
-            kwargs["num_cpus"] = 4
-        ray.init(**kwargs)
-    yield
-    # Don't shut down — other session-scoped suites may share this cluster.
-
-
 @pytest.fixture
 def ray_actor_baseline(ray_local_mode):
     """Snapshot live ray actor count before / after a test; asserts no leak."""
