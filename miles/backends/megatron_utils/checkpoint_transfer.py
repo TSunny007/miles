@@ -137,14 +137,24 @@ def _serialize_for_transport(
     # which rejects torch.nn.Parameter. Detach into plain Tensors that share
     # storage but pass the type check.
     tensors = [t.detach() if type(t) is not torch.Tensor else t for t in tensors]
-    total_bytes = sum(t.nbytes for t in tensors)
-    sizes_gb = sorted([(t.nbytes / 1024**3, tuple(t.shape), str(t.dtype), str(t.device)) for t in tensors], reverse=True)
-    top5 = sizes_gb[:5]
+    total_view_bytes = sum(t.nbytes for t in tensors)
+    storage_bytes_sum = sum(t.untyped_storage().nbytes() for t in tensors)
+    unique_storages = {t.untyped_storage().data_ptr(): t.untyped_storage().nbytes() for t in tensors}
+    total_unique_storage_bytes = sum(unique_storages.values())
+    sizes_view_gb = sorted([t.nbytes / 1024**3 for t in tensors], reverse=True)[:5]
+    sizes_storage_gb = sorted([t.untyped_storage().nbytes() / 1024**3 for t in tensors], reverse=True)[:5]
     logger.info(
-        "[OOM_DEBUG] _serialize_for_transport: %d tensors, total %.2f GB; top5=%s",
+        "[OOM_DEBUG] _serialize_for_transport: %d tensors; "
+        "view_bytes_sum=%.2f GB; storage_bytes_sum=%.2f GB (each tensor sends its full storage as uint8); "
+        "unique_storages=%d, unique_storage_bytes=%.2f GB; "
+        "top5_view=%s GB; top5_storage=%s GB",
         len(tensors),
-        total_bytes / 1024**3,
-        top5,
+        total_view_bytes / 1024**3,
+        storage_bytes_sum / 1024**3,
+        len(unique_storages),
+        total_unique_storage_bytes / 1024**3,
+        sizes_view_gb,
+        sizes_storage_gb,
     )
     return {
         "tensors": tensors,
