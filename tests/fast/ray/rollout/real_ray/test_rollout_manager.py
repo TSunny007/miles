@@ -70,6 +70,10 @@ def patch_low_level(monkeypatch):
     monkeypatch.setattr(rmgr, "start_session_server", lambda args: None)
     monkeypatch.setattr(rmgr, "load_function", lambda path: lambda *a, **kw: None)
     monkeypatch.setattr(rmgr, "load_rollout_function", lambda input, path: lambda *a, **kw: None)
+    # generate()/eval() drive these — production hits wandb / tensorboard.
+    monkeypatch.setattr(rmgr, "log_rollout_data", lambda *a, **kw: None)
+    monkeypatch.setattr(rmgr, "log_eval_rollout_data", lambda *a, **kw: None)
+    monkeypatch.setattr(rmgr, "save_debug_rollout_data", lambda *a, **kw: None)
 
 
 def _make_manager(args, pg):
