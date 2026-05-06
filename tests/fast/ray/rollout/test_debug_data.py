@@ -1,7 +1,3 @@
-"""Pure-logic tests for miles/ray/rollout/debug_data.py.
-
-save → load round-trip + subsample slicing."""
-
 from __future__ import annotations
 
 from pathlib import Path
