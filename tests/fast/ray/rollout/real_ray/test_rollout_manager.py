@@ -1,25 +1,19 @@
 """``RolloutManager`` cell dispatch + ``EnginesAndLock`` flow driven through
-real Ray actors.
+a real Ray actor.
 
-We do not stand up a full ``@ray.remote`` ``RolloutManager`` actor (its
-``__init__`` calls ``start_rollout_servers`` which is heavy). Instead we
-unwrap the class via ``__ray_actor_class__`` and call its methods on a
-minimal fake ``self`` that holds:
+We instantiate ``_RolloutManagerForTest`` (a Ray-actor subclass of
+``RolloutManager``) so that ``start_cell.remote()`` / ``stop_cell.remote()``
+/ ``get_updatable_engines_and_lock.remote()`` actually dispatch through Ray
+RPC. Production ``RolloutManager.__init__`` calls ``start_rollout_servers``
+which is heavy and creates real SGLang engines; the subclass overrides
+``__init__`` to take pre-built servers AND patches ``SGLangEngine`` + the
+addr allocator inside the worker process so any ``group.recover()`` driven
+by inherited methods still spawns mock actors.
 
-- ``self.servers``: real dict of real RolloutServer with real ServerGroups
-  whose engines are real ``MockSGLangEngine`` Ray actors
-- ``self.rollout_engine_lock``: a real ``asyncio.Lock``
-- ``self._health_monitors``: empty list (recover_updatable_engines bails
-  before touching them in our test scenarios)
-
-This file isolates the methods that genuinely need real actor data flow
-(start_cell, stop_cell, get_updatable_engines_and_lock with real engines).
 Pure routing/flag-flip helpers without Ray content live in
-``test_grab_bag.py``."""
+``tests/fast/ray/rollout/test_rollout_manager.py``."""
 
 from __future__ import annotations
-
-import asyncio
 
 import pytest
 import ray
@@ -32,7 +26,51 @@ from miles.ray.rollout.server_group import ServerGroup
 from tests.fast.ray.rollout.conftest import make_args
 
 
-_RolloutManagerCls = RolloutManager.__ray_actor_class__
+def _patch_engine_and_allocator_in_current_process() -> None:
+    """Replace SGLangEngine with the mock + stub the addr allocator.
+
+    Same shape as the ``patched_sglang_engine`` fixture but as a callable
+    so it can run inside a Ray worker (where pytest fixtures don't reach)."""
+    import miles.ray.rollout.server_group as sg
+    from miles.utils.test_utils.mock_sglang_engine import MockSGLangEngine
+
+    sg.SGLangEngine = MockSGLangEngine.__ray_actor_class__
+
+    def _fake_alloc(*args, **kwargs):
+        engines = kwargs["rollout_engines"]
+        addr_and_ports = {}
+        for rank, _ in engines:
+            addr_and_ports[rank] = dict(
+                host="127.0.0.1",
+                port=30000 + rank,
+                nccl_port=31000 + rank,
+                engine_info_bootstrap_port=32000 + rank,
+                dist_init_addr=f"127.0.0.1:{33000 + rank}",
+            )
+        return addr_and_ports, PortCursors(_values={0: 34000})
+
+    sg.allocate_rollout_engine_addr_and_ports_normal = _fake_alloc
+
+
+@ray.remote
+class _RolloutManagerForTest(RolloutManager.__ray_actor_class__):
+    """Real Ray-actor RolloutManager for routing tests. Bypasses the
+    production heavy ``__init__`` (start_rollout_servers etc.) and patches
+    SGLangEngine + allocator inside the worker process."""
+
+    def __init__(self, servers: dict[str, RolloutServer]):
+        _patch_engine_and_allocator_in_current_process()
+
+        from miles.ray.utils import Lock
+        self.servers = servers
+        self.rollout_engine_lock = Lock.options(num_cpus=1, num_gpus=0).remote()
+        self._health_monitors = []
+        self.rollout_id = 0
+
+    def _peek_servers(self) -> dict[str, RolloutServer]:
+        """Return the worker's view of ``self.servers`` (for test inspection
+        — Ray copies state at __init__, mutations stay in the worker)."""
+        return self.servers
 
 
 def _build_server(*, pg_tuple: tuple, model_name: str, update_weights: bool,
@@ -48,19 +86,6 @@ def _build_server(*, pg_tuple: tuple, model_name: str, update_weights: bool,
         ))
     return RolloutServer(server_groups=groups, model_name=model_name,
                          update_weights=update_weights)
-
-
-def _build_fake_self(servers: dict[str, RolloutServer]) -> _RolloutManagerCls:
-    """Build a RolloutManager instance bypassing ``__init__`` (which would call
-    ``start_rollout_servers``). The methods we test only touch the few attrs
-    we set here. Using ``__new__`` keeps ``self._get_updatable_server`` etc.
-    as real bound methods rather than needing manual binding."""
-    fake = _RolloutManagerCls.__new__(_RolloutManagerCls)
-    fake.servers = servers
-    fake.rollout_engine_lock = asyncio.Lock()
-    fake._health_monitors = []
-    fake.rollout_id = 0
-    return fake
 
 
 def _start_all(servers: dict[str, RolloutServer]) -> None:
@@ -82,60 +107,63 @@ def _kill_all(servers: dict[str, RolloutServer]) -> None:
                         pass
 
 
-# ----------------------------- start_cell / stop_cell -----------------------------
-
-
 @pytest.mark.asyncio
 class TestStartStopCell:
     async def test_start_cell_creates_actors_for_dead_engines(
         self, patched_sglang_engine, placement_group_factory,
     ):
-        """Mark all engines stopped, then start_cell(0) must drive a real
-        recover() that creates a real actor and runs init on it."""
+        """Mark all engines stopped, then ``start_cell.remote(0)`` driven via
+        real Ray actor dispatch must run a real ``recover()`` in the worker
+        and create a mock SGLangEngine actor with ``init`` called on it."""
         pg = placement_group_factory(2)
         srv = _build_server(pg_tuple=pg, model_name="actor", update_weights=True,
                             num_engines=2)
-        # Mark engines stopped so recover() will start them.
         for e in srv.server_groups[0].all_engines:
             e.mark_stopped()
         servers = {"actor": srv}
-        fake = _build_fake_self(servers)
 
+        manager = _RolloutManagerForTest.remote(servers)
         try:
-            await _RolloutManagerCls.start_cell(fake, 0)
-            # cell 0 → engine 0 (nodes_per_engine=1, so cell-per-engine)
-            assert srv.server_groups[0].all_engines[0].is_allocated
-            calls = ray.get(srv.server_groups[0].all_engines[0].actor_handle.get_calls.remote())
+            ray.get(manager.start_cell.remote(0))
+
+            # Ray copies state at __init__; the worker's mutations stay there.
+            # Pull the worker's servers view to inspect post-recover state.
+            worker_servers = ray.get(manager._peek_servers.remote())
+            engine = worker_servers["actor"].server_groups[0].all_engines[0]
+            assert engine.is_allocated
+            calls = ray.get(engine.actor_handle.get_calls.remote())
             assert "init" in [c[0] for c in calls]
         finally:
-            _kill_all(servers)
+            ray.get(manager._peek_servers.remote())  # ensure worker drained
+            _kill_all(ray.get(manager._peek_servers.remote()))
+            ray.kill(manager)
 
     async def test_stop_cell_kills_target_engine(
         self, patched_sglang_engine, placement_group_factory,
     ):
-        """stop_cell(0) must kill exactly the actor for that cell, not others."""
+        """``stop_cell.remote(0)`` dispatches to worker, which calls
+        ``stop_engines`` → ``ray.kill`` on the underlying actor handle.
+        Actor handles are stable across processes, so the test holds the
+        original handles and verifies follow-up ``.remote()`` raises."""
         pg = placement_group_factory(2)
         srv = _build_server(pg_tuple=pg, model_name="actor", update_weights=True,
                             num_engines=2)
         servers = {"actor": srv}
         _start_all(servers)
-        fake = _build_fake_self(servers)
+        original_actors = [e.actor_handle for e in srv.server_groups[0].all_engines]
 
+        manager = _RolloutManagerForTest.remote(servers)
         try:
-            actors = [e.actor_handle for e in srv.server_groups[0].all_engines]
-            await _RolloutManagerCls.stop_cell(fake, 0)
+            ray.get(manager.stop_cell.remote(0))
 
-            assert not srv.server_groups[0].all_engines[0].is_allocated
-            assert srv.server_groups[0].all_engines[1].is_allocated, "cell 1 untouched"
-
-            # Real Ray claim: the killed actor's followup .remote() raises.
+            # Cell 0 actor must be dead at the Ray level.
             with pytest.raises((ray.exceptions.RayActorError, ray.exceptions.RayTaskError)):
-                ray.get(actors[0].health_generate.remote(timeout=1.0), timeout=10.0)
+                ray.get(original_actors[0].health_generate.remote(timeout=1.0), timeout=10.0)
+            # Cell 1 actor untouched.
+            assert ray.get(original_actors[1].health_generate.remote(timeout=1.0)) is True
         finally:
             _kill_all(servers)
-
-
-# ----------------------------- get_updatable_engines_and_lock -----------------------------
+            ray.kill(manager)
 
 
 @pytest.mark.asyncio
@@ -144,7 +172,8 @@ class TestGetUpdatableEnginesAndLock:
         self, patched_sglang_engine, placement_group_factory,
     ):
         """The updatable server's engines / counts / offsets / has_new_engines
-        flow into EnginesAndLock. Engines are real Ray actor handles."""
+        flow into EnginesAndLock through real Ray RPC. Engines come back as
+        real Ray ActorHandles."""
         pg_a = placement_group_factory(2)
         pg_b = placement_group_factory(2)
         ref = _build_server(pg_tuple=pg_a, model_name="ref", update_weights=False,
@@ -154,14 +183,17 @@ class TestGetUpdatableEnginesAndLock:
         actor.server_groups[0].has_new_engines = True
         servers = {"actor": actor, "ref": ref}
         _start_all(servers)
-        fake = _build_fake_self(servers)
 
+        manager = _RolloutManagerForTest.remote(servers)
         try:
-            eal = await _RolloutManagerCls.get_updatable_engines_and_lock(fake)
+            eal = ray.get(manager.get_updatable_engines_and_lock.remote())
             assert eal.has_new_engines is True
             assert len(eal.rollout_engines) == 2
             assert eal.engine_gpu_counts == [1, 1]
-            # Sanity: the handles are real ActorHandles, not MagicMock.
+            # Handles came back through Ray serialization; still valid ActorHandles.
             assert all(isinstance(h, ray.actor.ActorHandle) for h in eal.rollout_engines)
+            # And they actually point at live mock actors.
+            assert ray.get(eal.rollout_engines[0].health_generate.remote(timeout=1.0)) is True
         finally:
             _kill_all(servers)
+            ray.kill(manager)
