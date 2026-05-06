@@ -1,12 +1,10 @@
-"""P0.1 — pure-logic UT for miles/ray/rollout/addr_allocator.py.
+"""Pure-logic tests for miles/ray/rollout/addr_allocator.py.
 
 Covers:
 - PortCursors empty/assign/next_base_port
 - allocate_rollout_engine_addr_and_ports_normal: single-node 8-card,
   multi-node, prefill, gpus>node_size, rank_offset != 0, mid-rank restart
-- allocate_rollout_engine_addr_and_ports_external
-
-Bug history: this module's import path bug fixed in e1c9c8486."""
+- allocate_rollout_engine_addr_and_ports_external"""
 
 from __future__ import annotations
 

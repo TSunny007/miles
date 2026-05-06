@@ -1,15 +1,9 @@
-"""P-extra: real Ray cluster smoke test.
+"""Engine-level real Ray actor smoke tests.
 
-Every other rollout test uses ``fake_actor_handle()`` (a MagicMock with
-``_spec_class=ray.actor.ActorHandle``) — pydantic's isinstance check passes,
-but ``actor.method.remote(...)`` is just a MagicMock chain, never reaches
-the Ray scheduler.
-
-This file exercises the full Ray actor path: a real ``ray.init()`` minicluster,
-a real ``@ray.remote`` ``MockSGLangEngine`` actor, real ``.remote()`` /
-``ray.get()`` round-trips, real ``ray.kill()`` teardown. The point is to
-catch the class of bug that "all mocks pass but a real Ray run hangs / drops
-calls / mis-serializes args" — a gap none of the existing tests cover."""
+Drives MockSGLangEngine as a real ``@ray.remote`` actor (not a MagicMock):
+real ``ray.init()`` minicluster, real ``.remote()`` / ``ray.get()`` round-trips,
+real ``ray.kill()`` teardown. Catches the class of bug that "all mocks pass
+but a real Ray run hangs / drops calls / mis-serializes args"."""
 
 from __future__ import annotations
 
@@ -20,34 +14,12 @@ from tests.fast.ray.rollout.conftest import make_args
 from tests.fast.ray.rollout.lifecycle.mock_engine import MockSGLangEngine
 
 
-@pytest.fixture(scope="module")
-def ray_smoke_cluster():
-    """Module-scoped Ray cluster connection.
-
-    On CI we attach to whatever cluster is already running (RAY_ADDRESS set).
-    On a clean machine we boot a small CPU-only local cluster. ``num_cpus``
-    must not be passed when joining an existing cluster — Ray hard-fails."""
-    import os
-    if not ray.is_initialized():
-        connect_kwargs: dict = dict(
-            ignore_reinit_error=True,
-            include_dashboard=False,
-            log_to_driver=False,
-        )
-        if not os.environ.get("RAY_ADDRESS"):
-            connect_kwargs["num_cpus"] = 4
-        ray.init(**connect_kwargs)
-    yield
-    # Leave Ray running for any later test that joins this cluster — shutdown
-    # is handled at process exit. Per-test actor cleanup is the test's job.
-
-
 class TestMockEngineRealRayLifecycle:
     """End-to-end: a real Ray actor can be created, driven through every
     method the rollout code calls, and torn down — without any monkeypatching
     of ``ray.remote`` / ``ray.get`` / ``ray.kill``."""
 
-    def test_actor_construction_and_method_round_trip(self, ray_smoke_cluster):
+    def test_actor_construction_and_method_round_trip(self, ray_cluster):
         args = make_args(rollout_num_gpus_per_engine=1)
         actor = MockSGLangEngine.options(num_cpus=0.1, num_gpus=0).remote(
             args, rank=0, worker_type="regular", base_gpu_id=0,
@@ -83,7 +55,7 @@ class TestMockEngineRealRayLifecycle:
             finally:
                 ray.kill(actor)
 
-    def test_fault_injection_round_trips_through_ray(self, ray_smoke_cluster):
+    def test_fault_injection_round_trips_through_ray(self, ray_cluster):
         """``set_fault`` schedules an exception on the next call to a method.
         Verify the exception actually surfaces back to the caller via ``ray.get``."""
         args = make_args(rollout_num_gpus_per_engine=1)
@@ -100,7 +72,7 @@ class TestMockEngineRealRayLifecycle:
         finally:
             ray.kill(actor)
 
-    def test_simulate_crash_keeps_actor_alive(self, ray_smoke_cluster):
+    def test_simulate_crash_keeps_actor_alive(self, ray_cluster):
         """Real ``SGLangEngine.simulate_crash`` calls ``self.shutdown()`` so
         the actor stays alive (only the http server dies). The real-Ray claim
         we verify here: after ``simulate_crash``, the actor handle is still

@@ -1,9 +1,8 @@
-"""P-critical.3 — rank ↔ addr_and_ports index consistency in start_engines.
+"""rank ↔ addr_and_ports index consistency in ``ServerGroup.start_engines``.
 
-Risk pointer:
-- server_group.py:153-160 builds init_handles by iterating ``new_engines``
+- ``server_group.py:153-160`` builds init_handles by iterating ``new_engines``
   with ``(global_rank, engine)`` pairs.
-- addr_allocator.py:85 uses ``current_rank = rank + i`` as the dict key.
+- ``addr_allocator.py:85`` uses ``current_rank = rank + i`` as the dict key.
 
 When ``rank_offset != 0`` or ``nodes_per_engine > 1``, the two index spaces
 must agree: every ``engine.init.remote(...)`` must receive the kwargs

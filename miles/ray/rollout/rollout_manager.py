@@ -37,20 +37,6 @@ logging.getLogger("httpcore").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 
-def get_updatable_server(servers: dict[str, RolloutServer]) -> RolloutServer | None:
-    """Pick the unique server that drives weight updates, or None.
-
-    Extracted as a free function so unit tests can drive the same logic
-    without instantiating the @ray.remote actor.
-    """
-    updatable = [srv for srv in servers.values() if srv.update_weights]
-    assert len(updatable) <= 1, (
-        f"Multiple servers have update_weights=True: {[srv.model_name for srv in updatable]}. "
-        f"Only one updatable server is supported."
-    )
-    return updatable[0] if updatable else None
-
-
 @ray.remote
 class RolloutManager:
     """The class to run rollout and convert rollout data to training data."""
@@ -244,7 +230,12 @@ class RolloutManager:
         await srv.recover()
 
     def _get_updatable_server(self) -> RolloutServer | None:
-        return get_updatable_server(self.servers)
+        updatable = [srv for srv in self.servers.values() if srv.update_weights]
+        assert len(updatable) <= 1, (
+            f"Multiple servers have update_weights=True: {[srv.model_name for srv in updatable]}. "
+            f"Only one updatable server is supported."
+        )
+        return updatable[0] if updatable else None
 
     # -------------------------- external start/stop -----------------------------
 

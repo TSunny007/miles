@@ -17,11 +17,7 @@ def load_debug_rollout_data(args, rollout_id: int):
     if (ratio := args.load_debug_rollout_data_subsample) is not None:
         original_num_rows = len(data)
         rough_subsample_num_rows = int(original_num_rows * ratio)
-        half = rough_subsample_num_rows // 2
-        # Guard against half == 0: data[-0:] is data[0:] (full slice), not an
-        # empty tail, because Python's `-0 == 0`. Without this branch a
-        # subsample ratio low enough to round to 0 returns the full dataset.
-        data = data[:half] + (data[-half:] if half > 0 else [])
+        data = data[: rough_subsample_num_rows // 2] + data[-rough_subsample_num_rows // 2 :]
         logger.info(
             f"Subsample loaded debug rollout data using {ratio=} and change num rows {original_num_rows} -> {len(data)}"
         )

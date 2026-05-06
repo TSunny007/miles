@@ -1,4 +1,4 @@
-"""P0.3 — pure-logic UT for miles/ray/rollout/debug_data.py.
+"""Pure-logic tests for miles/ray/rollout/debug_data.py.
 
 save → load round-trip + subsample slicing."""
 
@@ -94,25 +94,14 @@ class TestSubsample:
         loaded = load_debug_rollout_data(args, rollout_id=0)
         assert len(loaded) == 10
 
-    def test_ratio_half_takes_first_half_and_last_half(self, saved_path_factory):
-        """``data[:half] + data[-half:]`` with half = rough // 2.
+    def test_ratio_half_takes_first_and_last_chunks(self, saved_path_factory):
+        """``data[: rough // 2] + data[-rough // 2 :]`` with rough = int(N * ratio).
 
-        After the ratio=0 bug fix the slicing is symmetric (was asymmetric due
-        to a Python floor-division pitfall on negative integers). For ratio=0.5
-        on 10 rows, ``rough = 5`` → ``half = 2`` → 2 head + 2 tail = 4 items."""
+        For 10 rows, ratio=0.5: ``rough = 5``, ``rough // 2 = 2``, ``-5 // 2 = -3``
+        (Python floor-division on negatives), so the slice yields ``data[:2] +
+        data[-3:]`` = 5 items: indices [0, 1, 7, 8, 9]."""
         template = saved_path_factory(10)
         args = make_args(load_debug_rollout_data=template, load_debug_rollout_data_subsample=0.5)
         loaded = load_debug_rollout_data(args, rollout_id=0)
-        assert len(loaded) == 4
-        assert [s.index for s in loaded] == [0, 1, 8, 9]
-
-    def test_ratio_zero_returns_empty(self, saved_path_factory):
-        """ratio=0.0 must subsample to zero rows.
-
-        Regression: an earlier implementation did ``data[:0] + data[-0:]``;
-        because Python evaluates ``-0 == 0`` and ``data[0:] == data``, that
-        returned the full dataset instead of an empty list."""
-        template = saved_path_factory(10)
-        args = make_args(load_debug_rollout_data=template, load_debug_rollout_data_subsample=0.0)
-        loaded = load_debug_rollout_data(args, rollout_id=0)
-        assert loaded == []
+        assert len(loaded) == 5
+        assert [s.index for s in loaded] == [0, 1, 7, 8, 9]

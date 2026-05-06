@@ -8,10 +8,8 @@ omegaconf
 pillow
 pybase64
 pylatexenc
-coverage
 hypothesis
 pytest-asyncio
-pytest-cov
 pyyaml
 qwen_vl_utils # for VLM
 ray[default]

@@ -1,7 +1,8 @@
-"""P0.4 — grab-bag of small but valuable single-case tests.
+"""Grab-bag of small edge-case tests across miles/ray/rollout/.
 
-Each entry here is a one-shot edge case that doesn't warrant its own file.
-Per the test plan, these are kept short — single test per concern."""
+Covers single-case edges in rollout_data_conversion, metrics, server_cell,
+router_manager, and rollout_server pure helpers — each a one-shot that
+doesn't warrant its own file. Kept short: single test per concern."""
 
 from __future__ import annotations
 
@@ -11,7 +12,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from tests.fast.ray.rollout.conftest import make_args, make_sample, make_samples_grouped
+from tests.fast.ray.rollout.conftest import fake_actor_handle, make_args, make_sample, make_samples_grouped
 
 
 # --------------------------- rollout_data_conversion ---------------------------
@@ -102,6 +103,33 @@ class TestMetricsEdges:
 # --------------------------- server_cell ---------------------------
 
 
+def _build_servers(*, num_servers: int = 1, groups_per_server: int = 1,
+                   engines_per_group: int = 2, num_gpus_per_engine: int = 1) -> dict:
+    """Build a ``{key: RolloutServer}`` dict with real ServerGroup / ServerEngine
+    plus fake_actor_handle, suitable for driving ``get_cell_indexer_of_id_map``."""
+    from miles.ray.rollout.rollout_server import RolloutServer
+    from miles.ray.rollout.server_engine import ServerEngine
+    from miles.ray.rollout.server_group import ServerGroup
+    args = make_args(num_gpus_per_node=8)
+    servers: dict = {}
+    for s_idx in range(num_servers):
+        groups = []
+        for _g in range(groups_per_server):
+            engines = [ServerEngine() for _ in range(engines_per_group)]
+            for e in engines:
+                e.mark_allocated_uninitialized(fake_actor_handle())
+                e.mark_alive()
+            groups.append(ServerGroup(
+                args=args, pg=None, all_engines=engines,
+                num_gpus_per_engine=num_gpus_per_engine, has_new_engines=False,
+                update_weights=True,
+            ))
+        servers[f"model_{s_idx}"] = RolloutServer(
+            server_groups=groups, model_name=f"model_{s_idx}", update_weights=True,
+        )
+    return servers
+
+
 class TestServerCellAssertEdges:
     def test_get_cell_indexer_handles_placeholder_group(self):
         """``placeholder`` groups have empty all_engines but the assertion
@@ -117,6 +145,42 @@ class TestServerCellAssertEdges:
         srv.server_groups = [group]
         out = get_cell_indexer_of_id_map({"only": srv})
         assert out == []
+
+    def test_dispatches_single_server(self):
+        from miles.ray.rollout.server_cell import get_cell_indexer_of_id_map
+        servers = _build_servers(num_servers=1, groups_per_server=1, engines_per_group=3)
+        cells = get_cell_indexer_of_id_map(servers)
+        assert len(cells) == 3
+        for cell in cells:
+            assert cell.srv_key == "model_0"
+            assert cell.group_index == 0
+            assert len(cell.engine_indices) == 1  # nodes_per_engine=1
+
+    def test_dispatches_multi_group_continuous_ids(self):
+        from miles.ray.rollout.server_cell import get_cell_indexer_of_id_map
+        servers = _build_servers(num_servers=1, groups_per_server=2, engines_per_group=2)
+        cells = get_cell_indexer_of_id_map(servers)
+        assert len(cells) == 4
+        # cells 0,1 → group 0; cells 2,3 → group 1
+        assert cells[0].group_index == 0 and cells[1].group_index == 0
+        assert cells[2].group_index == 1 and cells[3].group_index == 1
+
+    def test_orders_servers_by_key(self):
+        from miles.ray.rollout.server_cell import get_cell_indexer_of_id_map
+        servers = _build_servers(num_servers=2, groups_per_server=1, engines_per_group=1)
+        cells = get_cell_indexer_of_id_map(servers)
+        srv_keys_in_order = [c.srv_key for c in cells]
+        assert srv_keys_in_order == sorted(srv_keys_in_order)
+
+    def test_engine_indices_span_nodes_per_engine(self):
+        """When num_gpus_per_engine=16 (>num_gpus_per_node=8), each cell maps to
+        2 contiguous engine slots."""
+        from miles.ray.rollout.server_cell import get_cell_indexer_of_id_map
+        servers = _build_servers(num_servers=1, groups_per_server=1,
+                                 engines_per_group=2, num_gpus_per_engine=16)
+        cells = get_cell_indexer_of_id_map(servers)
+        assert len(cells) == 1  # 2 engine slots → 1 multi-node cell
+        assert cells[0].engine_indices == [0, 1]
 
 
 # --------------------------- router_manager ---------------------------
@@ -217,3 +281,21 @@ class TestRolloutServerPureFunctions:
                          actor_num_nodes=1, actor_num_gpus_per_node=8,
                          critic_num_nodes=1, critic_num_gpus_per_node=4)
         assert _compute_rollout_offset(args) == 12
+
+    def test_compute_megatron_num_gpus_for_actor_only(self):
+        from miles.ray.rollout.rollout_server import _compute_megatron_num_gpus
+        args = make_args(actor_num_nodes=2, actor_num_gpus_per_node=8,
+                         use_critic=False, debug_rollout_only=False, critic_train_only=False)
+        assert _compute_megatron_num_gpus(args) == 16
+
+    def test_compute_megatron_num_gpus_with_critic(self):
+        from miles.ray.rollout.rollout_server import _compute_megatron_num_gpus
+        args = make_args(actor_num_nodes=1, actor_num_gpus_per_node=8,
+                         use_critic=True, critic_num_nodes=1, critic_num_gpus_per_node=4,
+                         debug_rollout_only=False, critic_train_only=False)
+        assert _compute_megatron_num_gpus(args) == 12
+
+    def test_compute_megatron_num_gpus_zero_when_debug_rollout_only(self):
+        from miles.ray.rollout.rollout_server import _compute_megatron_num_gpus
+        args = make_args(debug_rollout_only=True)
+        assert _compute_megatron_num_gpus(args) == 0

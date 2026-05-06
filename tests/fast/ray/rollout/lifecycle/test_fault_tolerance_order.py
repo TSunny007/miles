@@ -1,4 +1,4 @@
-"""P-critical.5 — `actor_group.update_weights` ordering under fault tolerance.
+"""``actor_group.update_weights`` ordering under fault tolerance.
 
 Production code (miles/ray/actor_group.py:122-132):
 

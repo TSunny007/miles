@@ -1,7 +1,7 @@
-"""P-infra.1 contract test: prevents MockSGLangEngine from drifting away
-from the real SGLangEngine API used by miles/ray/rollout/.
+"""Contract test: prevents MockSGLangEngine from drifting away from the
+real SGLangEngine API used by miles/ray/rollout/.
 
-Without this test, every P1 / P-critical / P2 test ends up testing the mock
+Without this test, every other lifecycle test ends up testing the mock
 itself rather than the real code path."""
 
 from __future__ import annotations

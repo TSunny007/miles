@@ -1,11 +1,9 @@
 """MockSGLangEngine: a Ray actor that mimics SGLangEngine's public API surface
 without touching CUDA / sglang / actual model weights.
 
-Used by all P1 / P-critical / P2 tests that need real Ray actor lifecycle but
-do not need a real engine.
-
-The contract test in `test_mock_engine_contract.py` enforces that this mock
-exposes every method called by `miles/ray/rollout/`."""
+Used by tests that need real Ray actor lifecycle but do not need a real
+engine. The contract test in ``test_mock_engine_contract.py`` enforces
+that this mock exposes every method called by ``miles/ray/rollout/``."""
 
 from __future__ import annotations
 

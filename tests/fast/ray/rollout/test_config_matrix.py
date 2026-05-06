@@ -1,11 +1,10 @@
-"""P2 — configuration matrix.
+"""SglangConfig validation matrix.
 
 Drives ``_resolve_sglang_config`` and downstream RolloutServer construction
 through every supported config combination. Asserts each path produces the
 expected engine count / engine_gpu_offsets / engine_gpu_counts / router count.
 
-Mock SGLangEngine is not needed here — we only construct dataclasses and
-check the static layout."""
+Pure-data tests; no Ray actor needed."""
 
 from __future__ import annotations
 

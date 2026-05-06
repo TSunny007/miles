@@ -1,7 +1,4 @@
-"""Shared fixtures for tests/fast/ray/rollout/.
-
-These fixtures back **all** rollout-refactor tests (P-critical / P0 / P1 / P2).
-Per the test plan, foundational and must land first."""
+"""Shared fixtures for tests/fast/ray/rollout/."""
 
 from __future__ import annotations
 
@@ -76,6 +73,7 @@ def make_args(**overrides: Any) -> Namespace:
         # sglang router
         sglang_router_ip=None,
         sglang_router_port=None,
+        sglang_router_policy=None,
         sglang_router_request_timeout_secs=600,
         sglang_dp_size=1,
         sglang_speculative_algorithm=None,
@@ -243,11 +241,11 @@ def ray_actor_baseline(ray_local_mode):
 def no_subprocess_leak():
     """Catch leaked multiprocessing children (router / session_server).
 
-    Per the test plan (P-infra.4): we deliberately do NOT track ray actor
-    counts here because we use ``local_mode``-style minicluster where actors
-    are process-internal and Python-GC-collected. The real leak risk is
-    multiprocessing children (router / session_server / sgl_router subproc)
-    which keep file descriptors open and bind ports across tests."""
+    We deliberately do NOT track ray actor counts here because we use
+    ``local_mode``-style minicluster where actors are process-internal and
+    Python-GC-collected. The real leak risk is multiprocessing children
+    (router / session_server / sgl_router subproc) which keep file
+    descriptors open and bind ports across tests."""
     import multiprocessing
 
     before = set(p.pid for p in multiprocessing.active_children())

@@ -1,13 +1,12 @@
-"""P-critical.2 — `RolloutServer.recover` shares one ``PortCursors`` across
-multi-group parallel recover, and ports across groups must not collide.
+"""``RolloutServer.recover`` shares one ``PortCursors`` across multi-group
+parallel recover, and ports across groups must not collide.
 
-Risk pointer: the source comment at server_group.py:37
+The source comment at ``server_group.py:37``
     # NOTE: this may have risk when recovering engines parallelly
 already flags this as a known concern. The contract this test enforces:
-
-  Two ``ServerGroup``s recovering simultaneously, sharing one PortCursors
-  object, must produce **disjoint** port allocations on each node — even if
-  their recover() coroutines complete out of order."""
+two ``ServerGroup``s recovering simultaneously, sharing one ``PortCursors``
+object, must produce **disjoint** port allocations on each node — even if
+their recover() coroutines complete out of order."""
 
 from __future__ import annotations
 
