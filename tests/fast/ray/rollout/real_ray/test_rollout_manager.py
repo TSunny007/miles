@@ -309,3 +309,52 @@ class TestCheckWeights:
                 assert len(per_group) == 2
                 for engine_result in per_group:
                     assert engine_result == {"_mock": True}
+
+
+@pytest.mark.asyncio
+class TestRecoverUpdatableEngines:
+    async def test_skips_recovery_when_no_rollout_started(
+        self, ray_local_mode, placement_group_factory, tmp_path, patch_low_level,
+    ):
+        """``recover_updatable_engines`` is a no-op while ``rollout_id == -1``
+        (initial state) — the trainer hasn't issued a rollout yet, so even if
+        a slot looks dead the manager must not pre-emptively recover."""
+        args = _make_test_args(tmp_path, models=[("actor", True)])
+        pg = placement_group_factory(2)
+
+        manager = _make_manager(args, pg)
+        eal_before = await manager.get_updatable_engines_and_lock()
+        actor0_before = eal_before.rollout_engines[0]
+
+        # Kill engine 0 directly + mark stopped (simulates a fault before any
+        # rollout). recover_updatable_engines must not bring it back yet.
+        ray.kill(actor0_before)
+        manager.servers["actor"].server_groups[0].all_engines[0].mark_stopped()
+
+        await manager.recover_updatable_engines()
+
+        # Slot 0 is still de-allocated; recovery skipped because rollout_id=-1.
+        assert not manager.servers["actor"].server_groups[0].all_engines[0].is_allocated
+
+    async def test_recovers_dead_engine_after_rollout_started(
+        self, ray_local_mode, placement_group_factory, tmp_path, patch_low_level,
+    ):
+        """Once ``rollout_id`` advances past -1 (mid-training), a dead slot on
+        the updatable server is brought back by ``recover_updatable_engines``."""
+        args = _make_test_args(tmp_path, models=[("actor", True)])
+        pg = placement_group_factory(2)
+
+        manager = _make_manager(args, pg)
+        eal_before = await manager.get_updatable_engines_and_lock()
+        actor0_before = eal_before.rollout_engines[0]
+
+        ray.kill(actor0_before)
+        manager.servers["actor"].server_groups[0].all_engines[0].mark_stopped()
+
+        manager.rollout_id = 0  # simulates "rollout has started"
+        await manager.recover_updatable_engines()
+
+        slot0 = manager.servers["actor"].server_groups[0].all_engines[0]
+        assert slot0.is_allocated
+        assert slot0.actor_handle is not actor0_before
+        assert ray.get(slot0.actor_handle.health_generate.remote(timeout=1.0)) is True
