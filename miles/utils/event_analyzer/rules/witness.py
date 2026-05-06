@@ -9,7 +9,6 @@ from miles.utils.event_logger.models import (
     TrainGroupStepEndEvent,
     TrainAdvantageComputationEvent,
     WitnessAllocateIdEvent,
-    WitnessSampleTrimmedEvent,
     WitnessSnapshotParamEvent,
 )
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
@@ -63,9 +62,6 @@ def check(events: list[Event]) -> list[WitnessIssue]:
             zero_adv_witness_ids_by_key=_compute_zero_advantage_witness_ids(
                 _filter_by_type(events, TrainAdvantageComputationEvent)
             ),
-            trimmed_witness_ids_of_step=_compute_trimmed_witness_ids_of_step(
-                _filter_by_type(events, WitnessSampleTrimmedEvent)
-            ),
         )
     )
 
@@ -94,25 +90,6 @@ def _compute_zero_advantage_witness_ids(
     return dict(result)
 
 
-def _compute_trimmed_witness_ids_of_step(events: list[WitnessSampleTrimmedEvent]) -> dict[int, set[int]]:
-    """Accumulate trimmed witness_ids up to and including each rollout_id.
-
-    Multiple cells/ranks log the same trim per rollout (the trim math is global), so we union.
-    """
-    by_rollout: dict[int, set[int]] = defaultdict(set)
-    for e in events:
-        by_rollout[e.rollout_id].update(e.trimmed_witness_ids)
-    if not by_rollout:
-        return {}
-
-    ans: dict[int, set[int]] = {}
-    running: set[int] = set()
-    for rollout_id in sorted(by_rollout.keys()):
-        running = running | by_rollout[rollout_id]
-        ans[rollout_id] = set(running)
-    return ans
-
-
 def _compute_expected_witness_ids_of_step(events: list[WitnessAllocateIdEvent]) -> dict[int, set[int]]:
     latest_by_rollout: dict[int, WitnessAllocateIdEvent] = {}
     for e in events:
@@ -137,7 +114,6 @@ def _find_mismatches(
     all_witness_events: list[WitnessSnapshotParamEvent],
     expected_witness_ids_of_step: dict[int, set[int]],
     zero_adv_witness_ids_by_key: dict[tuple[int, int], set[int]],
-    trimmed_witness_ids_of_step: dict[int, set[int]],
 ) -> Iterator[WitnessIssue]:
     for step_event in all_step_events:
         rollout_id = step_event.rollout_id
@@ -166,7 +142,6 @@ def _find_mismatches(
                 continue
 
             zero_adv_ids = zero_adv_witness_ids_by_key.get(_RolloutCellKey(rollout_id, cell_index), set())
-            trimmed_ids = trimmed_witness_ids_of_step.get(rollout_id, set())
 
             for event in witness_events_of_cell:
                 issue = _compare_snapshot(
@@ -175,7 +150,6 @@ def _find_mismatches(
                     rollout_id=rollout_id,
                     cell_index=cell_index,
                     zero_adv_witness_ids=zero_adv_ids,
-                    trimmed_witness_ids=trimmed_ids,
                 )
                 if issue is not None:
                     yield issue
@@ -188,26 +162,10 @@ def _compare_snapshot(
     rollout_id: int,
     cell_index: int,
     zero_adv_witness_ids: set[int],
-    trimmed_witness_ids: set[int],
 ) -> WitnessDataMismatchIssue | None:
     stale_set = set(event.stale_ids)
-    filtered_expected = expected - stale_set - zero_adv_witness_ids - trimmed_witness_ids
+    filtered_expected = expected - stale_set - zero_adv_witness_ids
     filtered_actual = set(event.nonzero_witness_ids) - stale_set
-
-    # Trimmed samples must NOT appear in actor — they were never trained on. If any do,
-    # something fed a trimmed sample into the actor, which is a bug.
-    leaked_trimmed = filtered_actual & trimmed_witness_ids
-    if leaked_trimmed:
-        return WitnessDataMismatchIssue(
-            rollout_id=rollout_id,
-            cell_index=cell_index,
-            description=(
-                f"Trimmed witness_ids leaked into actor snapshot for instance {event.instance_id}: "
-                f"leaked={sorted(leaked_trimmed)}"
-            ),
-            expected_witness_ids=sorted(filtered_expected),
-            actual_witness_ids=sorted(filtered_actual),
-        )
 
     if filtered_expected == filtered_actual:
         return None

@@ -302,23 +302,12 @@ def _apply_dynamic_global_batch_size(args, data: dict, *, dp_size: int) -> None:
     data["dynamic_global_batch_size"] = n_kept
     assert n_kept <= n_total, f"dynamic_global_batch_size={n_kept} exceeds num_samples={n_total}"
     if n_kept < n_total:
-        trimmed_witness_ids: list[int] = list(data.get("seq_witness_ids", [])[n_kept:])
         for key in PER_SAMPLE_LIST_KEYS:
             if key in data:
                 assert len(data[key]) == n_total, (
                     f"per-sample key {key!r} has len={len(data[key])}, expected {n_total}"
                 )
                 data[key] = data[key][:n_kept]
-        if trimmed_witness_ids:
-            from miles.utils.event_logger.logger import get_event_logger, is_event_logger_initialized
-            from miles.utils.event_logger.models import WitnessSampleTrimmedEvent
-
-            if is_event_logger_initialized():
-                get_event_logger().log(
-                    WitnessSampleTrimmedEvent,
-                    dict(trimmed_witness_ids=trimmed_witness_ids),
-                    print_log=False,
-                )
 
 
 def process_rollout_data(
