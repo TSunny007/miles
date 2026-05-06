@@ -1,6 +1,3 @@
-"""Pure-Python tests for ``rollout_server``. Tests that need real Ray actors
-live in ``real_ray/test_rollout_server.py``."""
-
 from __future__ import annotations
 
 import pytest
