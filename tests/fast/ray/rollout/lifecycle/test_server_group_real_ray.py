@@ -188,3 +188,100 @@ class TestStopEnginesRealKill:
         group.stop_engines(engine_indices=[0, 1])
         for e in group.all_engines:
             assert not e.is_allocated, "all engines must be stopped despite shutdown raise"
+
+
+# ----------------------------- start_engines through the REAL allocator -----------------------------
+
+
+class TestStartEnginesRealAllocator:
+    """Drive ``start_engines`` with the real
+    ``allocate_rollout_engine_addr_and_ports_normal`` (no stub) so that the
+    actor → driver port round-trip via
+    ``_get_current_node_ip_and_free_port.remote`` actually runs.
+
+    The deterministic-port stub used by other tests bypasses this whole code
+    path; without a real-allocator test, a regression in either side of that
+    interface (mock_engine return shape vs. allocator's per-node cursor
+    bookkeeping) would silently slip past the suite."""
+
+    def test_real_allocator_assigns_distinct_ports_via_remote_calls(
+        self, patched_sglang_engine_real_allocator, placement_group_factory,
+    ):
+        pg = placement_group_factory(2)
+        group = _build_group(pg_tuple=pg, num_engines=2)
+
+        handles, indices = group.start_engines(PortCursors.empty())
+        assert sorted(indices) == [0, 1]
+        ray.get(handles)
+
+        # Both engines got initialized — read back the kwargs that init() saw,
+        # which is the addr_and_ports map produced by the real allocator.
+        kwargs0 = ray.get(group.all_engines[0].actor_handle.get_init_kwargs.remote())
+        kwargs1 = ray.get(group.all_engines[1].actor_handle.get_init_kwargs.remote())
+
+        # Real-allocator claim 1: each engine got a fully-formed addr/port set
+        for k in kwargs0, kwargs1:
+            for key in ("host", "port", "nccl_port", "dist_init_addr"):
+                assert key in k, f"missing {key} in init kwargs from real allocator"
+            assert k["host"] == "127.0.0.1"
+
+        # Real-allocator claim 2: ports are distinct between engines (the
+        # node_port_cursor must advance across engines on the same node).
+        ports_engine0 = {kwargs0["port"], kwargs0["nccl_port"]}
+        ports_engine1 = {kwargs1["port"], kwargs1["nccl_port"]}
+        assert ports_engine0.isdisjoint(ports_engine1), (
+            f"port collision across engines: {ports_engine0} vs {ports_engine1}"
+        )
+
+        # Real-allocator claim 3: the allocator actually called
+        # _get_current_node_ip_and_free_port on the node-leader engine. The
+        # allocator collapses per-node port lookups onto the first engine
+        # for each node; with both engines on node 0 here, only engine 0
+        # sees these calls — but engine 1's ports still come from those
+        # results, so this assertion catches a regression where the allocator
+        # silently fell back to a stub or swallowed the .remote() calls.
+        leader_calls = ray.get(group.all_engines[0].actor_handle.get_calls.remote())
+        leader_method_names = [name for name, _, _ in leader_calls]
+        assert "_get_current_node_ip_and_free_port" in leader_method_names, (
+            f"allocator never called the port-finder; saw {leader_method_names}"
+        )
+
+        for e in group.all_engines:
+            ray.kill(e.actor_handle)
+
+    def test_real_allocator_advances_cursor_across_sequential_groups(
+        self, patched_sglang_engine_real_allocator, placement_group_factory,
+    ):
+        """Two sequentially-started groups on independent PGs both invoke the
+        real allocator. ``start_engines`` mutates the passed-in PortCursors
+        in place (via ``assign``); reusing it for B must shift B's ports past
+        A's — that's the cursor's job."""
+        pg_a = placement_group_factory(2)
+        pg_b = placement_group_factory(2)
+        a = _build_group(pg_tuple=pg_a, num_engines=2)
+        b = _build_group(pg_tuple=pg_b, num_engines=2)
+
+        cursors = PortCursors.empty()
+        handles_a, _ = a.start_engines(cursors)
+        ray.get(handles_a)
+        # `cursors` now carries the next-free-port state from group A.
+
+        handles_b, _ = b.start_engines(cursors)
+        ray.get(handles_b)
+
+        ports_a: set[int] = set()
+        ports_b: set[int] = set()
+        for e in a.all_engines:
+            kw = ray.get(e.actor_handle.get_init_kwargs.remote())
+            ports_a.update({kw["port"], kw["nccl_port"]})
+        for e in b.all_engines:
+            kw = ray.get(e.actor_handle.get_init_kwargs.remote())
+            ports_b.update({kw["port"], kw["nccl_port"]})
+
+        assert ports_a.isdisjoint(ports_b), (
+            f"sequential groups overlapped on ports: a={ports_a} b={ports_b}"
+        )
+
+        for g in (a, b):
+            for e in g.all_engines:
+                ray.kill(e.actor_handle)

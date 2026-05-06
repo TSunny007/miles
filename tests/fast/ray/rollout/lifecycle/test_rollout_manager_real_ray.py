@@ -12,9 +12,10 @@ minimal fake ``self`` that holds:
 - ``self._health_monitors``: empty list (recover_updatable_engines bails
   before touching them in our test scenarios)
 
-This isolates the methods under test (start_cell, stop_cell,
-get_updatable_engines_and_lock, clear_updatable_has_new_engines) from
-the heavy actor wiring while keeping the actor data flow real."""
+This file isolates the methods that genuinely need real actor data flow
+(start_cell, stop_cell, get_updatable_engines_and_lock with real engines).
+Pure routing/flag-flip helpers without Ray content live in
+``test_grab_bag.py``."""
 
 from __future__ import annotations
 
@@ -24,7 +25,7 @@ import pytest
 import ray
 
 from miles.ray.rollout.addr_allocator import PortCursors
-from miles.ray.rollout.rollout_manager import EnginesAndLock, RolloutManager
+from miles.ray.rollout.rollout_manager import RolloutManager
 from miles.ray.rollout.rollout_server import RolloutServer
 from miles.ray.rollout.server_engine import ServerEngine
 from miles.ray.rollout.server_group import ServerGroup
@@ -139,29 +140,6 @@ class TestStartStopCell:
 
 @pytest.mark.asyncio
 class TestGetUpdatableEnginesAndLock:
-    async def test_returns_empty_when_no_updatable_server(
-        self, patched_sglang_engine, placement_group_factory,
-    ):
-        """Servers exist but none is updatable — returns empty EnginesAndLock,
-        does NOT touch wait_all_engines_alive."""
-        pg = placement_group_factory(2)
-        srv = _build_server(pg_tuple=pg, model_name="ref", update_weights=False,
-                            num_engines=2)
-        servers = {"ref": srv}
-        fake = _build_fake_self(servers)
-
-        try:
-            eal = await _RolloutManagerCls.get_updatable_engines_and_lock(fake)
-            assert isinstance(eal, EnginesAndLock)
-            assert eal.rollout_engines == []
-            assert eal.has_new_engines is False
-            assert eal.engine_gpu_counts == []
-            assert eal.engine_gpu_offsets == []
-            # Lock must be the same instance from fake self.
-            assert eal.rollout_engine_lock is fake.rollout_engine_lock
-        finally:
-            _kill_all(servers)
-
     async def test_returns_populated_when_updatable_exists(
         self, patched_sglang_engine, placement_group_factory,
     ):
@@ -187,54 +165,3 @@ class TestGetUpdatableEnginesAndLock:
             assert all(isinstance(h, ray.actor.ActorHandle) for h in eal.rollout_engines)
         finally:
             _kill_all(servers)
-
-    async def test_assert_multiple_updatable_servers(
-        self, patched_sglang_engine, placement_group_factory,
-    ):
-        pg_a = placement_group_factory(1)
-        pg_b = placement_group_factory(1)
-        servers = {
-            "actor1": _build_server(pg_tuple=pg_a, model_name="actor1",
-                                    update_weights=True, num_engines=1),
-            "actor2": _build_server(pg_tuple=pg_b, model_name="actor2",
-                                    update_weights=True, num_engines=1),
-        }
-        fake = _build_fake_self(servers)
-
-        try:
-            with pytest.raises(AssertionError, match="Multiple servers"):
-                await _RolloutManagerCls.get_updatable_engines_and_lock(fake)
-        finally:
-            _kill_all(servers)
-
-
-# ----------------------------- clear_updatable_has_new_engines -----------------------------
-
-
-class TestClearHasNewEnginesFlag:
-    def test_clears_flag_on_updatable_server(self, placement_group_factory):
-        """No actors needed — pure flag flip on the data structure."""
-        pg = placement_group_factory(2)
-        srv = _build_server(pg_tuple=pg, model_name="actor", update_weights=True,
-                            num_engines=2, num_groups=2)
-        for g in srv.server_groups:
-            g.has_new_engines = True
-        servers = {"actor": srv}
-        fake = _build_fake_self(servers)
-
-        _RolloutManagerCls.clear_updatable_has_new_engines(fake)
-
-        for g in srv.server_groups:
-            assert g.has_new_engines is False
-
-    def test_no_op_when_no_updatable_server(self, placement_group_factory):
-        pg = placement_group_factory(2)
-        srv = _build_server(pg_tuple=pg, model_name="ref", update_weights=False,
-                            num_engines=2)
-        srv.server_groups[0].has_new_engines = True  # would be ignored
-        servers = {"ref": srv}
-        fake = _build_fake_self(servers)
-
-        _RolloutManagerCls.clear_updatable_has_new_engines(fake)
-        # ref's flag must NOT be cleared (it's not updatable)
-        assert srv.server_groups[0].has_new_engines is True

@@ -1,17 +1,13 @@
 """``RolloutServer`` aggregation methods driven through real Ray actors.
 
-Each engine is a real ``MockSGLangEngine`` actor. ``check_weights`` /
-``offload`` / ``onload`` flow through real ``asyncio.gather`` over real Ray
-ObjectRefs — the kind of bug that mock-only tests can't catch.
+Each engine is a real ``MockSGLangEngine`` actor. ``check_weights`` flows
+through real ``asyncio.gather`` over real Ray ObjectRefs — the kind of bug
+that mock-only tests can't catch.
 
-Cross-group property tests (``engines`` / ``engine_gpu_offsets`` / etc.) and
-the heterogeneous ``nodes_per_engine`` ValueError don't need real actors
-(they're pure dataclass logic) but they share the same ``ServerGroup`` shape,
-so we keep them here to avoid a separate file."""
+Pure cross-group dataclass-property tests (``engines`` / ``engine_gpu_offsets``
+/ ``nodes_per_engine`` heterogeneity) live in ``test_grab_bag.py``."""
 
 from __future__ import annotations
-
-import asyncio
 
 import pytest
 import ray
@@ -44,45 +40,6 @@ def _kill_group(group: ServerGroup) -> None:
     for e in group.all_engines:
         if e.is_allocated:
             ray.kill(e.actor_handle)
-
-
-# ----------------------------- wait_all_engines_alive -----------------------------
-
-
-@pytest.mark.asyncio
-class TestWaitAllEnginesAlive:
-    async def test_returns_immediately_when_all_alive(
-        self, patched_sglang_engine, placement_group_factory,
-    ):
-        pg = placement_group_factory(2)
-        group = _build_group(pg_tuple=pg, num_engines=2)
-        _start_group(group)
-        group.mark_alive([0, 1])
-        srv = RolloutServer(server_groups=[group])
-        try:
-            await asyncio.wait_for(srv.wait_all_engines_alive(timeout=10), timeout=2.0)
-        finally:
-            _kill_group(group)
-
-    async def test_raises_timeout_when_engine_never_becomes_alive(
-        self, patched_sglang_engine, placement_group_factory, monkeypatch,
-    ):
-        pg = placement_group_factory(2)
-        group = _build_group(pg_tuple=pg, num_engines=2)
-        _start_group(group)
-        # Don't mark_alive — the wait loop must time out.
-        srv = RolloutServer(server_groups=[group])
-
-        # Speed up the loop's sleep so the test finishes fast.
-        async def _fast_sleep(_):
-            return None
-        monkeypatch.setattr("asyncio.sleep", _fast_sleep)
-
-        try:
-            with pytest.raises(TimeoutError):
-                await srv.wait_all_engines_alive(timeout=2)
-        finally:
-            _kill_group(group)
 
 
 # ----------------------------- check_weights -----------------------------
@@ -124,54 +81,3 @@ class TestCheckWeightsAggregation:
         finally:
             _kill_group(a)
             _kill_group(b)
-
-
-# ----------------------------- cross-group flatten + heterogeneity (no real actors) -----------------------------
-
-
-class TestCrossGroupShapeProperties:
-    """These properties are pure dataclass logic — no need for real actors,
-    but the test scaffolding stays consistent with the rest of the file."""
-
-    def test_engines_collects_node0_engines_from_each_group(self, placement_group_factory):
-        pg_a = placement_group_factory(2)
-        pg_b = placement_group_factory(2)
-        a = _build_group(pg_tuple=pg_a, num_engines=2, gpu_offset=0)
-        b = _build_group(pg_tuple=pg_b, num_engines=2, gpu_offset=2)
-        srv = RolloutServer(server_groups=[a, b])
-        assert len(srv.engines) == 4
-
-    def test_engine_gpu_counts_parallel_to_engines(self, placement_group_factory):
-        pg_a = placement_group_factory(2)
-        pg_b = placement_group_factory(2)
-        a = _build_group(pg_tuple=pg_a, num_engines=2, num_gpus_per_engine=1)
-        b = _build_group(pg_tuple=pg_b, num_engines=2, num_gpus_per_engine=2)
-        srv = RolloutServer(server_groups=[a, b])
-        assert srv.engine_gpu_counts == [1, 1, 2, 2]
-
-    def test_engine_gpu_offsets_consistent_across_groups(self, placement_group_factory):
-        pg_a = placement_group_factory(2)
-        pg_b = placement_group_factory(2)
-        a = _build_group(pg_tuple=pg_a, num_engines=2, num_gpus_per_engine=1, gpu_offset=0)
-        b = _build_group(pg_tuple=pg_b, num_engines=2, num_gpus_per_engine=2, gpu_offset=4)
-        srv = RolloutServer(server_groups=[a, b])
-        assert srv.engine_gpu_offsets == [0, 1, 4, 6]
-
-
-class TestNodesPerEngineHeterogeneity:
-    def test_homogeneous_groups_return_single_value(self, placement_group_factory):
-        pg_a = placement_group_factory(2)
-        pg_b = placement_group_factory(2)
-        a = _build_group(pg_tuple=pg_a, num_gpus_per_engine=1)
-        b = _build_group(pg_tuple=pg_b, num_gpus_per_engine=1)
-        srv = RolloutServer(server_groups=[a, b])
-        assert srv.nodes_per_engine == 1
-
-    def test_heterogeneous_groups_raise_value_error(self, placement_group_factory):
-        pg_a = placement_group_factory(2)
-        pg_b = placement_group_factory(2)
-        a = _build_group(pg_tuple=pg_a, num_gpus_per_engine=1)   # 1 gpu/engine, 8 gpu/node → 1 node/engine
-        b = _build_group(pg_tuple=pg_b, num_gpus_per_engine=16)  # 16 gpu/engine → 2 nodes/engine
-        srv = RolloutServer(server_groups=[a, b])
-        with pytest.raises(ValueError, match="Heterogeneous nodes_per_engine"):
-            _ = srv.nodes_per_engine

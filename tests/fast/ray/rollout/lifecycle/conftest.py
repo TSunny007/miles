@@ -117,3 +117,15 @@ def patched_sglang_engine(monkeypatch, mock_engine_class):
         return addr_and_ports, PortCursors(_values={0: 34000})
 
     monkeypatch.setattr(mod, "allocate_rollout_engine_addr_and_ports_normal", _fake_alloc)
+
+
+@pytest.fixture
+def patched_sglang_engine_real_allocator(monkeypatch, mock_engine_class):
+    """Like ``patched_sglang_engine`` but does NOT stub the addr allocator —
+    use this to exercise the real ``allocate_rollout_engine_addr_and_ports_normal``
+    against MockSGLangEngine actors. The mock implements
+    ``_get_current_node_ip_and_free_port`` with a deterministic
+    ``max(seq, start_port)`` counter, so the real allocator's per-node
+    cursor logic runs end-to-end through real Ray ``.remote`` calls."""
+    import miles.ray.rollout.server_group as mod
+    monkeypatch.setattr(mod, "SGLangEngine", mock_engine_class)

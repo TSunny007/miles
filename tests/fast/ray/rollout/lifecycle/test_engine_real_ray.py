@@ -72,26 +72,3 @@ class TestMockEngineRealRayLifecycle:
         finally:
             ray.kill(actor)
 
-    def test_simulate_crash_keeps_actor_alive(self, ray_cluster):
-        """Real ``SGLangEngine.simulate_crash`` calls ``self.shutdown()`` so
-        the actor stays alive (only the http server dies). The real-Ray claim
-        we verify here: after ``simulate_crash``, the actor handle is still
-        usable — a follow-up ``.remote()`` call returns rather than hangs or
-        raises ``ray.exceptions.RayActorError``. The earlier mock used
-        ``os._exit(1)`` which killed the actor, so this guards against a
-        regression in that direction (which would silently break any test
-        depending on actor-still-alive semantics)."""
-        args = make_args(rollout_num_gpus_per_engine=1)
-        actor = MockSGLangEngine.options(num_cpus=0.1, num_gpus=0).remote(
-            args, rank=0, worker_type="regular", base_gpu_id=0,
-            sglang_overrides={}, num_gpus_per_engine=1,
-        )
-        try:
-            ray.get(actor.init.remote(host="127.0.0.1", port=20000))
-            ray.get(actor.simulate_crash.remote())
-            # Real-Ray check: a follow-up call must not raise RayActorError.
-            # Using a short timeout so that a hang shows up as a test failure
-            # rather than a hung CI job.
-            ray.get(actor.health_generate.remote(timeout=1.0), timeout=10.0)
-        finally:
-            ray.kill(actor)

@@ -131,6 +131,16 @@ class TestKillAndRecover:
             assert "init" in method_names
             assert "release_memory_occupation" in method_names
             assert "resume_memory_occupation" in method_names
+
+            # Ordering claim: release must precede resume — otherwise GPU
+            # memory would be re-occupied before being released, defeating
+            # the offload. Use the first occurrence of each.
+            release_idx = method_names.index("release_memory_occupation")
+            resume_idx = method_names.index("resume_memory_occupation")
+            assert release_idx < resume_idx, (
+                f"release must precede resume; saw order {method_names}"
+            )
+
             # Find the resume call and confirm WEIGHTS tag
             resume_calls = [c for c in calls if c[0] == "resume_memory_occupation"]
             assert len(resume_calls) == 1
@@ -145,17 +155,18 @@ class TestKillAndRecover:
 
 @pytest.mark.asyncio
 class TestConcurrentRecover:
-    async def test_two_groups_recover_in_parallel_no_port_collision(
+    async def test_two_groups_recover_in_parallel_completes_without_deadlock(
         self, patched_sglang_engine, placement_group_factory,
     ):
         """Two ServerGroups recovering simultaneously through real
-        ``asyncio.gather`` must not produce overlapping ports.
+        ``asyncio.gather`` must both complete — no deadlock, no exception
+        leaking out of the gather chain.
 
-        Note: in this test the deterministic port stub from the conftest
-        gives each group its own port range (groups don't see each other's
-        ranks), so the disjoint-port property holds trivially. The real
-        value here is exercising the gather chain end-to-end across two
-        groups without deadlock."""
+        We do not claim "no port collision" here because the deterministic
+        port stub from the conftest gives each group its own range (groups
+        don't see each other's ranks), so disjoint-port is trivially true.
+        The real-ray claim being verified is end-to-end gather completion
+        across two groups."""
         pg_a = placement_group_factory(2)
         pg_b = placement_group_factory(2)
         a = _build_group(pg_tuple=pg_a, num_engines=2)

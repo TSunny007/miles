@@ -299,3 +299,152 @@ class TestRolloutServerPureFunctions:
         from miles.ray.rollout.rollout_server import _compute_megatron_num_gpus
         args = make_args(debug_rollout_only=True)
         assert _compute_megatron_num_gpus(args) == 0
+
+
+# --------------------------- rollout_server cross-group properties ---------------------------
+
+
+def _build_dataclass_group(*, num_engines: int = 2, num_gpus_per_engine: int = 1,
+                           gpu_offset: int = 0) -> "ServerGroup":
+    """Build a ServerGroup with ``pg=None`` for pure dataclass-property tests
+    that never schedule actors. Each engine is unallocated."""
+    from miles.ray.rollout.server_engine import ServerEngine
+    from miles.ray.rollout.server_group import ServerGroup
+    args = make_args(num_gpus_per_node=8)
+    engines = [ServerEngine() for _ in range(num_engines)]
+    return ServerGroup(
+        args=args, pg=None, all_engines=engines,
+        num_gpus_per_engine=num_gpus_per_engine, has_new_engines=False,
+        gpu_offset=gpu_offset, update_weights=True,
+    )
+
+
+class TestRolloutServerCrossGroupProperties:
+    """RolloutServer cross-group flatten properties — pure dataclass logic,
+    no Ray actors required."""
+
+    def test_engines_collects_node0_engines_from_each_group(self):
+        from miles.ray.rollout.rollout_server import RolloutServer
+        a = _build_dataclass_group(num_engines=2, gpu_offset=0)
+        b = _build_dataclass_group(num_engines=2, gpu_offset=2)
+        srv = RolloutServer(server_groups=[a, b])
+        assert len(srv.engines) == 4
+
+    def test_engine_gpu_counts_parallel_to_engines(self):
+        from miles.ray.rollout.rollout_server import RolloutServer
+        a = _build_dataclass_group(num_engines=2, num_gpus_per_engine=1)
+        b = _build_dataclass_group(num_engines=2, num_gpus_per_engine=2)
+        srv = RolloutServer(server_groups=[a, b])
+        assert srv.engine_gpu_counts == [1, 1, 2, 2]
+
+    def test_engine_gpu_offsets_consistent_across_groups(self):
+        from miles.ray.rollout.rollout_server import RolloutServer
+        a = _build_dataclass_group(num_engines=2, num_gpus_per_engine=1, gpu_offset=0)
+        b = _build_dataclass_group(num_engines=2, num_gpus_per_engine=2, gpu_offset=4)
+        srv = RolloutServer(server_groups=[a, b])
+        assert srv.engine_gpu_offsets == [0, 1, 4, 6]
+
+
+class TestRolloutServerNodesPerEngineHeterogeneity:
+    def test_homogeneous_groups_return_single_value(self):
+        from miles.ray.rollout.rollout_server import RolloutServer
+        a = _build_dataclass_group(num_gpus_per_engine=1)
+        b = _build_dataclass_group(num_gpus_per_engine=1)
+        srv = RolloutServer(server_groups=[a, b])
+        assert srv.nodes_per_engine == 1
+
+    def test_heterogeneous_groups_raise_value_error(self):
+        from miles.ray.rollout.rollout_server import RolloutServer
+        a = _build_dataclass_group(num_gpus_per_engine=1)    # 1 gpu/engine, 8 gpu/node → 1 node/engine
+        b = _build_dataclass_group(num_gpus_per_engine=16)   # 16 gpu/engine → 2 nodes/engine
+        srv = RolloutServer(server_groups=[a, b])
+        with pytest.raises(ValueError, match="Heterogeneous nodes_per_engine"):
+            _ = srv.nodes_per_engine
+
+
+# --------------------------- rollout_manager pure routing helpers ---------------------------
+
+
+def _build_dataclass_server(*, model_name: str, update_weights: bool,
+                            num_engines: int = 2, num_groups: int = 1) -> "RolloutServer":
+    """Build a RolloutServer + ServerGroup chain with ``pg=None`` for tests
+    that exercise rollout_manager routing without scheduling any actors."""
+    from miles.ray.rollout.rollout_server import RolloutServer
+    groups = [_build_dataclass_group(num_engines=num_engines) for _ in range(num_groups)]
+    for g in groups:
+        g.update_weights = update_weights
+    return RolloutServer(server_groups=groups, model_name=model_name,
+                         update_weights=update_weights)
+
+
+def _build_fake_rollout_manager(servers: dict) -> "RolloutManager":
+    """Construct a RolloutManager bypassing ``__init__`` (which would call
+    ``start_rollout_servers``). Sets just the attrs the routing helpers touch."""
+    import asyncio
+    from miles.ray.rollout.rollout_manager import RolloutManager
+    cls = RolloutManager.__ray_actor_class__
+    fake = cls.__new__(cls)
+    fake.servers = servers
+    fake.rollout_engine_lock = asyncio.Lock()
+    fake._health_monitors = []
+    fake.rollout_id = 0
+    return fake
+
+
+class TestRolloutManagerGetUpdatableEmptyPaths:
+    """Pure routing tests for RolloutManager.get_updatable_engines_and_lock —
+    cover the two no-actor paths (no updatable server / multiple updatables)."""
+
+    @pytest.mark.asyncio
+    async def test_returns_empty_when_no_updatable_server(self):
+        from miles.ray.rollout.rollout_manager import EnginesAndLock, RolloutManager
+
+        srv = _build_dataclass_server(model_name="ref", update_weights=False, num_engines=2)
+        fake = _build_fake_rollout_manager({"ref": srv})
+
+        eal = await RolloutManager.__ray_actor_class__.get_updatable_engines_and_lock(fake)
+        assert isinstance(eal, EnginesAndLock)
+        assert eal.rollout_engines == []
+        assert eal.has_new_engines is False
+        assert eal.engine_gpu_counts == []
+        assert eal.engine_gpu_offsets == []
+        assert eal.rollout_engine_lock is fake.rollout_engine_lock
+
+    @pytest.mark.asyncio
+    async def test_assert_multiple_updatable_servers(self):
+        from miles.ray.rollout.rollout_manager import RolloutManager
+        servers = {
+            "actor1": _build_dataclass_server(model_name="actor1", update_weights=True, num_engines=1),
+            "actor2": _build_dataclass_server(model_name="actor2", update_weights=True, num_engines=1),
+        }
+        fake = _build_fake_rollout_manager(servers)
+
+        with pytest.raises(AssertionError, match="Multiple servers"):
+            await RolloutManager.__ray_actor_class__.get_updatable_engines_and_lock(fake)
+
+
+class TestRolloutManagerClearHasNewEnginesFlag:
+    """Pure flag flip — no actors, no async."""
+
+    def test_clears_flag_on_updatable_server(self):
+        from miles.ray.rollout.rollout_manager import RolloutManager
+        srv = _build_dataclass_server(model_name="actor", update_weights=True,
+                                       num_engines=2, num_groups=2)
+        for g in srv.server_groups:
+            g.has_new_engines = True
+        fake = _build_fake_rollout_manager({"actor": srv})
+
+        RolloutManager.__ray_actor_class__.clear_updatable_has_new_engines(fake)
+
+        for g in srv.server_groups:
+            assert g.has_new_engines is False
+
+    def test_no_op_when_no_updatable_server(self):
+        from miles.ray.rollout.rollout_manager import RolloutManager
+        srv = _build_dataclass_server(model_name="ref", update_weights=False, num_engines=2)
+        srv.server_groups[0].has_new_engines = True
+        fake = _build_fake_rollout_manager({"ref": srv})
+
+        RolloutManager.__ray_actor_class__.clear_updatable_has_new_engines(fake)
+        # ref's flag must NOT be cleared (it's not updatable)
+        assert srv.server_groups[0].has_new_engines is True
