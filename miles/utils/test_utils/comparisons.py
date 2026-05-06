@@ -84,12 +84,20 @@ def _keep_only_final_attempt(events: list[MetricEvent]) -> list[MetricEvent]:
 
     During FT healing, a crashed rollout is retried at attempt+1; events from
     the failed attempt are partial and should be discarded for comparison.
+
+    Rollout-side metrics (e.g. RolloutManager log_rollout_metrics) have
+    attempt=None — they are not part of the FT retry stream, so we treat them
+    as a single attempt (normalized to 0).
     """
+    def _attempt(e: MetricEvent) -> int:
+        return e.attempt if e.attempt is not None else 0
+
     max_attempt_by_rollout: dict[int, int] = {}
     for e in events:
-        if e.rollout_id not in max_attempt_by_rollout or e.attempt > max_attempt_by_rollout[e.rollout_id]:
-            max_attempt_by_rollout[e.rollout_id] = e.attempt
-    return [e for e in events if e.attempt == max_attempt_by_rollout[e.rollout_id]]
+        a = _attempt(e)
+        if e.rollout_id not in max_attempt_by_rollout or a > max_attempt_by_rollout[e.rollout_id]:
+            max_attempt_by_rollout[e.rollout_id] = a
+    return [e for e in events if _attempt(e) == max_attempt_by_rollout[e.rollout_id]]
 
 
 def _check_event_counts(
