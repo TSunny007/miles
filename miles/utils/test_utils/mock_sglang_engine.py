@@ -1,15 +1,9 @@
-"""MockSGLangEngine: a Ray actor that mimics SGLangEngine's public API surface
-without touching CUDA / sglang / actual model weights.
-
-Used by tests that need real Ray actor lifecycle but do not need a real
-engine. The contract test in ``test_mock_engine_contract.py`` enforces
-that this mock exposes every method called by ``miles/ray/rollout/``."""
+"""In-memory stand-in for ``SGLangEngine`` (no CUDA, no sglang, no model)."""
 
 from __future__ import annotations
 
 import logging
 import threading
-from typing import Any
 
 import ray
 
@@ -18,9 +12,7 @@ logger = logging.getLogger(__name__)
 
 @ray.remote
 class MockSGLangEngine:
-    """In-memory stand-in for ``SGLangEngine``.
-
-    Records every call into ``self.calls`` so tests can assert sequence and
+    """Records every call into ``self.calls`` so tests can assert sequence and
     arguments. Fault injection is set via ``set_fault(method, exception)``."""
 
     def __init__(
@@ -45,8 +37,6 @@ class MockSGLangEngine:
         self._port_seq = 20000
         self._lock = threading.Lock()
 
-    # --------------------------- fault control ---------------------------
-
     def set_fault(self, method: str, exception: BaseException | None):
         """Schedule the given method to raise on its next call. Pass None to clear."""
         if exception is None:
@@ -63,11 +53,7 @@ class MockSGLangEngine:
                 return dict(kwargs)
         return None
 
-    # --------------------------- engine API ------------------------------
-
     def init(self, **kwargs):
-        # Real SGLangEngine.init returns None; mirror that so tests asserting on
-        # the return value catch real-path bugs.
         self._record("init", (), kwargs)
         self._maybe_fault("init")
         self.initialized = True
@@ -104,12 +90,6 @@ class MockSGLangEngine:
         return True
 
     def check_weights(self, action: str):
-        # Real SGLangEngine.check_weights returns the http server response
-        # (an arbitrary dict produced by the model's check_weights handler).
-        # Tests should not assume any particular shape; we return a sentinel
-        # dict that's neither truthy in a meaningful way nor matches what the
-        # real server returns, encouraging tests to assert on .called rather
-        # than the return value.
         self._record("check_weights", (action,), {})
         return {"_mock": True, "action": action}
 
@@ -167,27 +147,18 @@ class MockSGLangEngine:
         self._record("stop_profile", (), {})
 
     def simulate_crash(self):
-        """Match real SGLangEngine.simulate_crash semantics.
-
-        Real implementation (sglang_engine.py:575) calls ``self.shutdown()``;
-        the actor itself stays alive (only the http server process dies).
-        Earlier mock used ``os._exit(1)`` which kills the actor — that
-        diverged from production and would mask any test that depended on
-        actor-still-alive behavior."""
+        # Real SGLangEngine.simulate_crash calls self.shutdown() (only the http
+        # server dies; the actor itself stays alive). Mirror that or any test
+        # depending on actor-still-alive semantics will diverge from prod.
         self._record("simulate_crash", (), {})
         self.shutdown()
 
-    # --------------------------- port allocation ------------------------
-
     def _get_current_node_ip_and_free_port(self, start_port: int = 15000, consecutive: int = 1):
-        """Mock the port-finding helper used by addr_allocator."""
         self._record("_get_current_node_ip_and_free_port", (), {"start_port": start_port, "consecutive": consecutive})
         with self._lock:
             port = max(self._port_seq, start_port)
             self._port_seq = port + consecutive
             return ("127.0.0.1", port)
-
-    # --------------------------- impl ------------------------------------
 
     def _record(self, name: str, args: tuple, kwargs: dict) -> None:
         self.calls.append((name, args, kwargs))

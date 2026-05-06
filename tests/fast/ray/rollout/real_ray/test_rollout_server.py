@@ -70,14 +70,13 @@ class TestCheckWeightsAggregation:
             assert len(results) == 2
             assert len(results[0]) == 2 and len(results[1]) == 3
 
-            # Read each actor's call log and confirm check_weights ran with action="report"
-            for g in (a, b):
-                for e in g.engines:
-                    calls = ray.get(e.actor_handle.get_calls.remote())
-                    cw_calls = [c for c in calls if c[0] == "check_weights"]
-                    assert len(cw_calls) == 1
-                    _, args, _ = cw_calls[0]
-                    assert args == ("report",)
+            all_engines = [e for g in (a, b) for e in g.engines]
+            all_calls = ray.get([e.actor_handle.get_calls.remote() for e in all_engines])
+            for calls in all_calls:
+                cw_calls = [c for c in calls if c[0] == "check_weights"]
+                assert len(cw_calls) == 1
+                _, args, _ = cw_calls[0]
+                assert args == ("report",)
         finally:
             _kill_group(a)
             _kill_group(b)

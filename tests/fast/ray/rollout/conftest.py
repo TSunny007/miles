@@ -1,5 +1,3 @@
-"""Shared fixtures for tests/fast/ray/rollout/."""
-
 from __future__ import annotations
 
 import textwrap
@@ -14,27 +12,20 @@ from miles.utils.types import Sample
 
 
 def fake_actor_handle() -> MagicMock:
-    """Build a MagicMock that passes isinstance(x, ray.actor.ActorHandle).
+    """MagicMock that passes ``isinstance(x, ray.actor.ActorHandle)``.
 
-    The pydantic _StateAllocated* model validates ``actor_handle: ray.actor.ActorHandle``
-    via ``is_instance_of``. MagicMock's ``__class__`` is a property that returns
-    ``self._spec_class or type(self)``, so we set ``_spec_class`` directly. Using
-    ``spec=`` would also achieve isinstance compatibility but locks attribute access
-    to the spec class — and ActorHandle's methods are routed via ``__getattr__``,
-    so they don't show up as class attributes. Direct ``_spec_class`` assignment
-    keeps arbitrary attribute auto-creation (so ``actor.shutdown.remote(...)``
-    chains still work)."""
+    Setting ``_spec_class`` directly (rather than ``spec=...``) keeps
+    arbitrary-attribute auto-creation working so ``actor.shutdown.remote(...)``
+    chains still resolve — ``ActorHandle`` routes its methods via
+    ``__getattr__`` and they don't show up as class attributes."""
     m = MagicMock()
     m._spec_class = ray.actor.ActorHandle
     return m
 
 
 def make_args(**overrides: Any) -> Namespace:
-    """Construct a minimal but usable args namespace covering all fields touched
-    by `miles/ray/rollout/`. Each test overrides only what it cares about.
-
-    The defaults below were derived by grep-ing every `args.<name>` in the new
-    modules. Adding a new field here is fine; deleting one likely breaks tests."""
+    """Args namespace covering every field touched by ``miles/ray/rollout/``.
+    Adding a new field is fine; deleting one likely breaks tests."""
     defaults: dict[str, Any] = dict(
         # rollout core
         rollout_num_gpus=8,
@@ -200,29 +191,29 @@ def make_sglang_config_yaml(
 
 @pytest.fixture(scope="session")
 def ray_local_mode():
-    """Session-scoped Ray init. Uses local_mode=False (real mini cluster) so
-    that ``@ray.remote`` actors actually run as ray actors. Tests that only
-    need pure-Python helpers should not depend on this fixture."""
+    """Session-scoped Ray init. On CI ``RAY_ADDRESS`` points at an existing
+    cluster, so we connect without ``num_cpus`` (Ray rejects it when joining).
+    Tests that only need pure-Python helpers should not depend on this."""
+    import os
+
     import ray
 
     if not ray.is_initialized():
-        ray.init(
-            num_cpus=4,
+        kwargs: dict = dict(
             ignore_reinit_error=True,
             include_dashboard=False,
             log_to_driver=False,
         )
+        if not os.environ.get("RAY_ADDRESS"):
+            kwargs["num_cpus"] = 4
+        ray.init(**kwargs)
     yield
-    # do not shutdown here; let the process exit handle it (avoids breaking
-    # other session-scoped suites that may share the cluster).
+    # Don't shut down — other session-scoped suites may share this cluster.
 
 
 @pytest.fixture
 def ray_actor_baseline(ray_local_mode):
-    """Snapshot live ray actor count before / after a test. Asserts no leak.
-
-    Kept minimal because in our test layout most actors are torn down by the
-    test itself; this fixture only catches accidental leaks from helper code."""
+    """Snapshot live ray actor count before / after a test; asserts no leak."""
     import ray
 
     def _count():
@@ -237,30 +228,9 @@ def ray_actor_baseline(ray_local_mode):
     assert after <= before, f"Ray actor leaked: before={before} after={after}"
 
 
-@pytest.fixture
-def no_subprocess_leak():
-    """Catch leaked multiprocessing children (router / session_server).
-
-    We deliberately do NOT track ray actor counts here because we use
-    ``local_mode``-style minicluster where actors are process-internal and
-    Python-GC-collected. The real leak risk is multiprocessing children
-    (router / session_server / sgl_router subproc) which keep file
-    descriptors open and bind ports across tests."""
-    import multiprocessing
-
-    before = set(p.pid for p in multiprocessing.active_children())
-    yield
-    after = set(p.pid for p in multiprocessing.active_children())
-    leaked = after - before
-    assert not leaked, f"Subprocess leaked: pids={leaked}"
-
-
 @pytest.fixture(autouse=True)
 def _autouse_subprocess_leak_check():
-    """Apply ``no_subprocess_leak`` to every test in this dir.
-
-    Implemented inline so we don't have to remember to add the fixture
-    parameter on every test that starts a router / session_server."""
+    """Catch leaked router / session_server multiprocessing children."""
     import multiprocessing
 
     before = {p.pid for p in multiprocessing.active_children()}
@@ -279,11 +249,7 @@ def _autouse_subprocess_leak_check():
         raise AssertionError(f"Subprocess leaked from previous test: pids={leaked}")
 
 
-# --------------------------- pytest helpers ---------------------------
-
-
 def dedent(s: str) -> str:
-    """Convenience for inline YAML in tests."""
     return textwrap.dedent(s).lstrip("\n")
 
 
@@ -294,8 +260,7 @@ def make_dataclass_group(
     gpu_offset: int = 0,
 ):
     """Build a ``ServerGroup`` with ``pg=None`` (no actor scheduling). Each
-    engine starts unallocated. Used by pure dataclass-property tests in
-    ``test_rollout_server.py`` and ``test_rollout_manager.py``."""
+    engine starts unallocated."""
     from miles.ray.rollout.server_engine import ServerEngine
     from miles.ray.rollout.server_group import ServerGroup
     args = make_args(num_gpus_per_node=8)
@@ -305,3 +270,29 @@ def make_dataclass_group(
         num_gpus_per_engine=num_gpus_per_engine, has_new_engines=False,
         gpu_offset=gpu_offset, update_weights=True,
     )
+
+
+def fake_engine(host: str = "10.0.0.1", port_seed: int = 30000) -> MagicMock:
+    """MagicMock that mimics ``SGLangEngine`` enough for ``addr_allocator``.
+
+    Mocks ``_get_current_node_ip_and_free_port.remote(start_port, consecutive)``
+    with a deterministic ``max(seq, start_port)`` counter so allocator tests
+    can predict and assert on port assignment."""
+    e = MagicMock()
+    e._port_cursor = port_seed
+
+    def _alloc(start_port: int = 15000, consecutive: int = 1):
+        port = max(e._port_cursor, start_port)
+        e._port_cursor = port + consecutive
+        return (host, port)
+
+    e._get_current_node_ip_and_free_port.remote.side_effect = lambda **kw: _alloc(**kw)
+    return e
+
+
+@pytest.fixture
+def patch_ray_get(monkeypatch):
+    """Make ``ray.get(remote_call(...))`` return the MagicMock's value directly,
+    so allocator tests don't need a real Ray cluster."""
+    import miles.ray.rollout.addr_allocator as mod
+    monkeypatch.setattr(mod.ray, "get", lambda x: x)

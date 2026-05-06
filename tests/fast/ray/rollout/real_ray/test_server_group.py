@@ -1,15 +1,5 @@
-"""``ServerGroup`` lifecycle driven through real Ray actors with MockSGLangEngine.
-
-Real-Ray bits that mocking can't reach: actual actor creation, real init
-handle await, real ``ray.kill`` + ``RayActorError`` on followup.
-
-The ``patched_sglang_engine`` fixture (in ``conftest.py``) substitutes
-``SGLangEngine`` with the unwrapped MockSGLangEngine class inside
-``miles.ray.rollout.server_group``, so ``RolloutRayActor = ray.remote(SGLangEngine)``
-ends up creating real ``MockSGLangEngine`` actors via real Ray scheduling.
-The actual port allocator is replaced with a deterministic stub so we don't
-also have to plumb ``_get_current_node_ip_and_free_port`` through the actor
-(that's covered by addr_allocator tests)."""
+"""``ServerGroup`` lifecycle driven through real Ray actors. Covers actor
+creation, init handle await, and real ``ray.kill`` + ``RayActorError``."""
 
 from __future__ import annotations
 
@@ -20,7 +10,6 @@ from miles.ray.rollout.addr_allocator import PortCursors
 from miles.ray.rollout.server_engine import ServerEngine
 from miles.ray.rollout.server_group import ServerGroup
 from tests.fast.ray.rollout.conftest import make_args
-
 
 def _build_group(
     *,
@@ -46,10 +35,6 @@ def _build_group(
         model_path=model_path,
     )
 
-
-# ----------------------------- start_engines short-circuits -----------------------------
-
-
 class TestStartEnginesShortCircuits:
     """Branches that bail before hitting the PG / actor creation path."""
 
@@ -70,10 +55,6 @@ class TestStartEnginesShortCircuits:
         handles, indices = group.start_engines(PortCursors.empty())
         assert handles == [] and indices == []
         assert group.has_new_engines is False
-
-
-# ----------------------------- start_engines normal path -----------------------------
-
 
 class TestStartEnginesRealActors:
     """Drives the actor-creation loop end-to-end. Verifies the actors are
@@ -139,10 +120,6 @@ class TestStartEnginesRealActors:
         for h in first_handles:
             ray.kill(h)
 
-
-# ----------------------------- stop_engines -----------------------------
-
-
 class TestStopEnginesRealKill:
     """``ray.kill`` is the real thing here — we verify the actor is actually
     dead by issuing a follow-up ``.remote()`` and expecting RayActorError."""
@@ -188,10 +165,6 @@ class TestStopEnginesRealKill:
         for e in group.all_engines:
             assert not e.is_allocated, "all engines must be stopped despite shutdown raise"
 
-
-# ----------------------------- start_engines through the REAL allocator -----------------------------
-
-
 class TestStartEnginesRealAllocator:
     """Drive ``start_engines`` with the real
     ``allocate_rollout_engine_addr_and_ports_normal`` (no stub) so that the
@@ -213,10 +186,11 @@ class TestStartEnginesRealAllocator:
         assert sorted(indices) == [0, 1]
         ray.get(handles)
 
-        # Both engines got initialized — read back the kwargs that init() saw,
-        # which is the addr_and_ports map produced by the real allocator.
-        kwargs0 = ray.get(group.all_engines[0].actor_handle.get_init_kwargs.remote())
-        kwargs1 = ray.get(group.all_engines[1].actor_handle.get_init_kwargs.remote())
+        # init kwargs == the addr_and_ports map produced by the real allocator
+        kwargs0, kwargs1 = ray.get([
+            group.all_engines[0].actor_handle.get_init_kwargs.remote(),
+            group.all_engines[1].actor_handle.get_init_kwargs.remote(),
+        ])
 
         # Real-allocator claim 1: each engine got a fully-formed addr/port set
         for k in kwargs0, kwargs1:
@@ -268,14 +242,10 @@ class TestStartEnginesRealAllocator:
         handles_b, _ = b.start_engines(cursors)
         ray.get(handles_b)
 
-        ports_a: set[int] = set()
-        ports_b: set[int] = set()
-        for e in a.all_engines:
-            kw = ray.get(e.actor_handle.get_init_kwargs.remote())
-            ports_a.update({kw["port"], kw["nccl_port"]})
-        for e in b.all_engines:
-            kw = ray.get(e.actor_handle.get_init_kwargs.remote())
-            ports_b.update({kw["port"], kw["nccl_port"]})
+        kwargs_a = ray.get([e.actor_handle.get_init_kwargs.remote() for e in a.all_engines])
+        kwargs_b = ray.get([e.actor_handle.get_init_kwargs.remote() for e in b.all_engines])
+        ports_a = {p for kw in kwargs_a for p in (kw["port"], kw["nccl_port"])}
+        ports_b = {p for kw in kwargs_b for p in (kw["port"], kw["nccl_port"])}
 
         assert ports_a.isdisjoint(ports_b), (
             f"sequential groups overlapped on ports: a={ports_a} b={ports_b}"
