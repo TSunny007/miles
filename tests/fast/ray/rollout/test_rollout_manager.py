@@ -11,21 +11,7 @@ import asyncio
 
 import pytest
 
-from tests.fast.ray.rollout.conftest import make_args
-
-
-def _build_dataclass_group(*, num_engines: int = 2, num_gpus_per_engine: int = 1,
-                           gpu_offset: int = 0):
-    """Build a ServerGroup with ``pg=None`` (no actor scheduling)."""
-    from miles.ray.rollout.server_engine import ServerEngine
-    from miles.ray.rollout.server_group import ServerGroup
-    args = make_args(num_gpus_per_node=8)
-    engines = [ServerEngine() for _ in range(num_engines)]
-    return ServerGroup(
-        args=args, pg=None, all_engines=engines,
-        num_gpus_per_engine=num_gpus_per_engine, has_new_engines=False,
-        gpu_offset=gpu_offset, update_weights=True,
-    )
+from tests.fast.ray.rollout.conftest import make_dataclass_group
 
 
 def _build_dataclass_server(*, model_name: str, update_weights: bool,
@@ -33,7 +19,7 @@ def _build_dataclass_server(*, model_name: str, update_weights: bool,
     """Build a RolloutServer + ServerGroup chain with ``pg=None`` for tests
     that exercise rollout_manager routing without scheduling any actors."""
     from miles.ray.rollout.rollout_server import RolloutServer
-    groups = [_build_dataclass_group(num_engines=num_engines) for _ in range(num_groups)]
+    groups = [make_dataclass_group(num_engines=num_engines) for _ in range(num_groups)]
     for g in groups:
         g.update_weights = update_weights
     return RolloutServer(server_groups=groups, model_name=model_name,

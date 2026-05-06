@@ -10,22 +10,7 @@ from __future__ import annotations
 
 import pytest
 
-from tests.fast.ray.rollout.conftest import make_args
-
-
-def _build_dataclass_group(*, num_engines: int = 2, num_gpus_per_engine: int = 1,
-                           gpu_offset: int = 0):
-    """Build a ServerGroup with ``pg=None`` for pure dataclass-property tests
-    that never schedule actors. Each engine is unallocated."""
-    from miles.ray.rollout.server_engine import ServerEngine
-    from miles.ray.rollout.server_group import ServerGroup
-    args = make_args(num_gpus_per_node=8)
-    engines = [ServerEngine() for _ in range(num_engines)]
-    return ServerGroup(
-        args=args, pg=None, all_engines=engines,
-        num_gpus_per_engine=num_gpus_per_engine, has_new_engines=False,
-        gpu_offset=gpu_offset, update_weights=True,
-    )
+from tests.fast.ray.rollout.conftest import make_args, make_dataclass_group
 
 
 class TestRolloutServerPureFunctions:
@@ -92,22 +77,22 @@ class TestRolloutServerCrossGroupProperties:
 
     def test_engines_collects_node0_engines_from_each_group(self):
         from miles.ray.rollout.rollout_server import RolloutServer
-        a = _build_dataclass_group(num_engines=2, gpu_offset=0)
-        b = _build_dataclass_group(num_engines=2, gpu_offset=2)
+        a = make_dataclass_group(num_engines=2, gpu_offset=0)
+        b = make_dataclass_group(num_engines=2, gpu_offset=2)
         srv = RolloutServer(server_groups=[a, b])
         assert len(srv.engines) == 4
 
     def test_engine_gpu_counts_parallel_to_engines(self):
         from miles.ray.rollout.rollout_server import RolloutServer
-        a = _build_dataclass_group(num_engines=2, num_gpus_per_engine=1)
-        b = _build_dataclass_group(num_engines=2, num_gpus_per_engine=2)
+        a = make_dataclass_group(num_engines=2, num_gpus_per_engine=1)
+        b = make_dataclass_group(num_engines=2, num_gpus_per_engine=2)
         srv = RolloutServer(server_groups=[a, b])
         assert srv.engine_gpu_counts == [1, 1, 2, 2]
 
     def test_engine_gpu_offsets_consistent_across_groups(self):
         from miles.ray.rollout.rollout_server import RolloutServer
-        a = _build_dataclass_group(num_engines=2, num_gpus_per_engine=1, gpu_offset=0)
-        b = _build_dataclass_group(num_engines=2, num_gpus_per_engine=2, gpu_offset=4)
+        a = make_dataclass_group(num_engines=2, num_gpus_per_engine=1, gpu_offset=0)
+        b = make_dataclass_group(num_engines=2, num_gpus_per_engine=2, gpu_offset=4)
         srv = RolloutServer(server_groups=[a, b])
         assert srv.engine_gpu_offsets == [0, 1, 4, 6]
 
@@ -115,15 +100,15 @@ class TestRolloutServerCrossGroupProperties:
 class TestRolloutServerNodesPerEngineHeterogeneity:
     def test_homogeneous_groups_return_single_value(self):
         from miles.ray.rollout.rollout_server import RolloutServer
-        a = _build_dataclass_group(num_gpus_per_engine=1)
-        b = _build_dataclass_group(num_gpus_per_engine=1)
+        a = make_dataclass_group(num_gpus_per_engine=1)
+        b = make_dataclass_group(num_gpus_per_engine=1)
         srv = RolloutServer(server_groups=[a, b])
         assert srv.nodes_per_engine == 1
 
     def test_heterogeneous_groups_raise_value_error(self):
         from miles.ray.rollout.rollout_server import RolloutServer
-        a = _build_dataclass_group(num_gpus_per_engine=1)    # 1 gpu/engine, 8 gpu/node → 1 node/engine
-        b = _build_dataclass_group(num_gpus_per_engine=16)   # 16 gpu/engine → 2 nodes/engine
+        a = make_dataclass_group(num_gpus_per_engine=1)    # 1 gpu/engine, 8 gpu/node → 1 node/engine
+        b = make_dataclass_group(num_gpus_per_engine=16)   # 16 gpu/engine → 2 nodes/engine
         srv = RolloutServer(server_groups=[a, b])
         with pytest.raises(ValueError, match="Heterogeneous nodes_per_engine"):
             _ = srv.nodes_per_engine

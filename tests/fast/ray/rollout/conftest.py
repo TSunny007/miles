@@ -285,3 +285,23 @@ def _autouse_subprocess_leak_check():
 def dedent(s: str) -> str:
     """Convenience for inline YAML in tests."""
     return textwrap.dedent(s).lstrip("\n")
+
+
+def make_dataclass_group(
+    *,
+    num_engines: int = 2,
+    num_gpus_per_engine: int = 1,
+    gpu_offset: int = 0,
+):
+    """Build a ``ServerGroup`` with ``pg=None`` (no actor scheduling). Each
+    engine starts unallocated. Used by pure dataclass-property tests in
+    ``test_rollout_server.py`` and ``test_rollout_manager.py``."""
+    from miles.ray.rollout.server_engine import ServerEngine
+    from miles.ray.rollout.server_group import ServerGroup
+    args = make_args(num_gpus_per_node=8)
+    engines = [ServerEngine() for _ in range(num_engines)]
+    return ServerGroup(
+        args=args, pg=None, all_engines=engines,
+        num_gpus_per_engine=num_gpus_per_engine, has_new_engines=False,
+        gpu_offset=gpu_offset, update_weights=True,
+    )
