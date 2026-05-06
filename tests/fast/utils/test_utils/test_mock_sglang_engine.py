@@ -1,8 +1,5 @@
-"""Contract test: prevents MockSGLangEngine from drifting away from the
-real SGLangEngine API used by miles/ray/rollout/.
-
-Without this test, every other real_ray test ends up testing the mock
-itself rather than the real code path."""
+"""Contract test for ``MockSGLangEngine``: keeps it aligned with
+``SGLangEngine`` for every method called from ``miles/ray/rollout/``."""
 
 from __future__ import annotations
 
@@ -15,8 +12,8 @@ import pytest
 from miles.backends.sglang_utils.sglang_engine import SGLangEngine
 from miles.utils.test_utils.mock_sglang_engine import MockSGLangEngine
 
-
-ROLLOUT_DIR = Path(__file__).resolve().parents[5] / "miles" / "ray" / "rollout"
+# tests/fast/utils/test_utils/test_mock_sglang_engine.py → 4 levels up → repo root
+ROLLOUT_DIR = Path(__file__).resolve().parents[4] / "miles" / "ray" / "rollout"
 
 
 def _grep_engine_method_calls(directory: Path) -> set[str]:
