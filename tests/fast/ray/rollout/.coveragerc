@@ -1,0 +1,26 @@
+[run]
+branch = True
+source =
+    miles.ray.rollout.addr_allocator
+    miles.ray.rollout.server_group
+    miles.ray.rollout.train_data_conversion
+    miles.ray.rollout.rollout_manager
+    miles.ray.rollout.rollout_server
+
+[report]
+# Total branch coverage gate, pinned at the current measured floor with a
+# small buffer for noise. Per-file breakdown is in COVERAGE.md.
+#
+# As of 2026-05-06: total = 69% (addr_allocator 100%, server_group 94%,
+# train_data_conversion 92%, rollout_server 70%, rollout_manager 27%).
+# The two laggards are tracked in COVERAGE.md as future work to push to 90%.
+fail_under = 67
+show_missing = True
+skip_covered = False
+
+# Lines that don't need coverage:
+exclude_lines =
+    pragma: no cover
+    raise NotImplementedError
+    if TYPE_CHECKING:
+    if __name__ == .\__main__.:
