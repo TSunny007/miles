@@ -1,15 +1,10 @@
 """``RolloutManager`` cell dispatch + ``EnginesAndLock`` flow driven through
-the production ``RolloutManager`` actor.
+the production ``RolloutManager`` class.
 
-Why ``_PatchedRolloutManager`` exists (a 6-line @ray.remote subclass of
-``RolloutManager``): Ray actor methods run in *separate worker processes*
-from the test driver, so ``monkeypatch`` in the test process can't reach
-them. The standard mechanism for "run code in the worker before
-``__init__``" is a per-actor subclass that does the patches in its own
-``__init__`` and then calls ``super().__init__``. Ray's other escape hatch
-— ``runtime_env={"worker_process_setup_hook": ...}`` — is only supported at
-``ray.init()`` level, which would impose the patches on every actor in the
-shared test session.
+We instantiate ``RolloutManager.__ray_actor_class__`` directly (the raw Python
+class behind ``@ray.remote``) — that keeps the manager in the test process so
+``monkeypatch`` reaches its dependencies, while the engines it spawns are
+still real Ray actors (mocks). Methods are ``async`` and called with ``await``.
 
 Pure routing/flag-flip helpers without Ray content live in
 ``tests/fast/ray/rollout/test_rollout_manager.py``."""
@@ -25,8 +20,9 @@ from miles.ray.rollout.rollout_manager import RolloutManager
 from tests.fast.ray.rollout.conftest import make_args
 
 
-def _patch_low_level_in_current_process() -> None:
-    """Run inside the worker before ``RolloutManager.__init__``. Replaces:
+@pytest.fixture
+def patch_low_level(monkeypatch):
+    """Replace, in the test process:
     - ``SGLangEngine`` → ``MockSGLangEngine`` so created actors are mocks.
     - addr allocator → deterministic stub.
     - ``init_tracking`` / ``init_http_client`` / ``start_session_server`` /
@@ -37,7 +33,7 @@ def _patch_low_level_in_current_process() -> None:
     from miles.ray.rollout.addr_allocator import PortCursors
     from miles.utils.test_utils.mock_sglang_engine import MockSGLangEngine
 
-    sg.SGLangEngine = MockSGLangEngine.__ray_actor_class__
+    monkeypatch.setattr(sg, "SGLangEngine", MockSGLangEngine.__ray_actor_class__)
 
     def _fake_alloc(*args, **kwargs):
         engines = kwargs["rollout_engines"]
@@ -55,27 +51,16 @@ def _patch_low_level_in_current_process() -> None:
             PortCursors(_values={0: 34000}),
         )
 
-    sg.allocate_rollout_engine_addr_and_ports_normal = _fake_alloc
-
-    rmgr.init_tracking = lambda *a, **kw: None
-    rmgr.init_http_client = lambda args: None
-    rmgr.start_session_server = lambda args: None
-    rmgr.load_function = lambda path: lambda *a, **kw: None
-    rmgr.load_rollout_function = lambda input, path: lambda *a, **kw: None
-
-
-@ray.remote
-class _PatchedRolloutManager(RolloutManager.__ray_actor_class__):
-    """Real production ``RolloutManager``; the only override is to apply the
-    worker-process patches before super().__init__ runs."""
-
-    def __init__(self, args, pg):
-        _patch_low_level_in_current_process()
-        super().__init__(args, pg)
+    monkeypatch.setattr(sg, "allocate_rollout_engine_addr_and_ports_normal", _fake_alloc)
+    monkeypatch.setattr(rmgr, "init_tracking", lambda *a, **kw: None)
+    monkeypatch.setattr(rmgr, "init_http_client", lambda args: None)
+    monkeypatch.setattr(rmgr, "start_session_server", lambda args: None)
+    monkeypatch.setattr(rmgr, "load_function", lambda path: lambda *a, **kw: None)
+    monkeypatch.setattr(rmgr, "load_rollout_function", lambda input, path: lambda *a, **kw: None)
 
 
 def _make_manager(args, pg):
-    return _PatchedRolloutManager.remote(args, pg)
+    return RolloutManager.__ray_actor_class__(args, pg)
 
 
 def _write_sglang_config(tmp_path, *, models: list[tuple[str, bool]]) -> str:
@@ -123,7 +108,7 @@ def _make_test_args(tmp_path, *, models: list[tuple[str, bool]]):
 @pytest.mark.asyncio
 class TestRolloutManagerInit:
     async def test_init_creates_live_mock_engines_via_real_start_rollout_servers(
-        self, ray_local_mode, placement_group_factory, tmp_path,
+        self, ray_local_mode, placement_group_factory, tmp_path, patch_low_level,
     ):
         """End-to-end smoke: production ``__init__`` + ``start_rollout_servers``
         runs against MockSGLangEngine; resulting engines are reachable as Ray
@@ -132,41 +117,34 @@ class TestRolloutManagerInit:
         pg = placement_group_factory(2)
 
         manager = _make_manager(args, pg)
-        try:
-            eal = ray.get(manager.get_updatable_engines_and_lock.remote())
-            assert len(eal.rollout_engines) == 2
-            for h in eal.rollout_engines:
-                assert isinstance(h, ray.actor.ActorHandle)
-                assert ray.get(h.health_generate.remote(timeout=1.0)) is True
-        finally:
-            ray.kill(manager)
+        eal = await manager.get_updatable_engines_and_lock()
+        assert len(eal.rollout_engines) == 2
+        for h in eal.rollout_engines:
+            assert isinstance(h, ray.actor.ActorHandle)
+            assert ray.get(h.health_generate.remote(timeout=1.0)) is True
 
 
 @pytest.mark.asyncio
 class TestStartStopCell:
     async def test_stop_cell_kills_target_engine_only(
-        self, ray_local_mode, placement_group_factory, tmp_path,
+        self, ray_local_mode, placement_group_factory, tmp_path, patch_low_level,
     ):
-        """``stop_cell.remote(0)`` dispatches via real Ray RPC and kills cell
-        0's actor; cell 1 untouched."""
+        """``stop_cell(0)`` kills cell 0's actor; cell 1 untouched."""
         args = _make_test_args(tmp_path, models=[("actor", True)])
         pg = placement_group_factory(2)
 
         manager = _make_manager(args, pg)
-        try:
-            eal = ray.get(manager.get_updatable_engines_and_lock.remote())
-            actor0, actor1 = eal.rollout_engines
+        eal = await manager.get_updatable_engines_and_lock()
+        actor0, actor1 = eal.rollout_engines
 
-            ray.get(manager.stop_cell.remote(0))
+        await manager.stop_cell(0)
 
-            with pytest.raises((ray.exceptions.RayActorError, ray.exceptions.RayTaskError)):
-                ray.get(actor0.health_generate.remote(timeout=1.0), timeout=10.0)
-            assert ray.get(actor1.health_generate.remote(timeout=1.0)) is True
-        finally:
-            ray.kill(manager)
+        with pytest.raises((ray.exceptions.RayActorError, ray.exceptions.RayTaskError)):
+            ray.get(actor0.health_generate.remote(timeout=1.0), timeout=10.0)
+        assert ray.get(actor1.health_generate.remote(timeout=1.0)) is True
 
     async def test_start_cell_recovers_after_stop_cell(
-        self, ray_local_mode, placement_group_factory, tmp_path,
+        self, ray_local_mode, placement_group_factory, tmp_path, patch_low_level,
     ):
         """stop_cell(0) → start_cell(0) drives a real ``recover()`` that spawns
         a fresh mock actor in place of the killed one."""
@@ -174,26 +152,23 @@ class TestStartStopCell:
         pg = placement_group_factory(2)
 
         manager = _make_manager(args, pg)
-        try:
-            eal_before = ray.get(manager.get_updatable_engines_and_lock.remote())
-            actor0_before = eal_before.rollout_engines[0]
+        eal_before = await manager.get_updatable_engines_and_lock()
+        actor0_before = eal_before.rollout_engines[0]
 
-            ray.get(manager.stop_cell.remote(0))
-            ray.get(manager.start_cell.remote(0))
+        await manager.stop_cell(0)
+        await manager.start_cell(0)
 
-            eal_after = ray.get(manager.get_updatable_engines_and_lock.remote())
-            actor0_after = eal_after.rollout_engines[0]
+        eal_after = await manager.get_updatable_engines_and_lock()
+        actor0_after = eal_after.rollout_engines[0]
 
-            assert actor0_after is not actor0_before, "start_cell must produce a fresh actor"
-            assert ray.get(actor0_after.health_generate.remote(timeout=1.0)) is True
-        finally:
-            ray.kill(manager)
+        assert actor0_after is not actor0_before, "start_cell must produce a fresh actor"
+        assert ray.get(actor0_after.health_generate.remote(timeout=1.0)) is True
 
 
 @pytest.mark.asyncio
 class TestGetUpdatableEnginesAndLock:
     async def test_returns_only_updatable_servers_engines_in_multi_model_setup(
-        self, ray_local_mode, placement_group_factory, tmp_path,
+        self, ray_local_mode, placement_group_factory, tmp_path, patch_low_level,
     ):
         """With actor (update_weights=True) + ref (update_weights=False), the
         returned EnginesAndLock contains the actor's engines only."""
@@ -201,11 +176,8 @@ class TestGetUpdatableEnginesAndLock:
         pg = placement_group_factory(4)
 
         manager = _make_manager(args, pg)
-        try:
-            eal = ray.get(manager.get_updatable_engines_and_lock.remote())
-            assert len(eal.rollout_engines) == 2  # actor's 2, not ref's 2
-            assert eal.engine_gpu_counts == [1, 1]
-            assert all(isinstance(h, ray.actor.ActorHandle) for h in eal.rollout_engines)
-            assert ray.get(eal.rollout_engines[0].health_generate.remote(timeout=1.0)) is True
-        finally:
-            ray.kill(manager)
+        eal = await manager.get_updatable_engines_and_lock()
+        assert len(eal.rollout_engines) == 2  # actor's 2, not ref's 2
+        assert eal.engine_gpu_counts == [1, 1]
+        assert all(isinstance(h, ray.actor.ActorHandle) for h in eal.rollout_engines)
+        assert ray.get(eal.rollout_engines[0].health_generate.remote(timeout=1.0)) is True
