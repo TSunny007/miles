@@ -1,7 +1,3 @@
-"""Pure-logic tests for miles/ray/rollout/train_data_conversion.py.
-
-Covers convert_samples_to_train_data, _post_process_rewards, split_train_data_by_dp."""
-
 from __future__ import annotations
 
 import pytest
