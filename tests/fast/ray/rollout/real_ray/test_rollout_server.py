@@ -5,7 +5,7 @@ through real ``asyncio.gather`` over real Ray ObjectRefs — the kind of bug
 that mock-only tests can't catch.
 
 Pure cross-group dataclass-property tests (``engines`` / ``engine_gpu_offsets``
-/ ``nodes_per_engine`` heterogeneity) live in ``test_grab_bag.py``."""
+/ ``nodes_per_engine`` heterogeneity) live in ``tests/fast/ray/rollout/test_rollout_server.py``."""
 
 from __future__ import annotations
 
