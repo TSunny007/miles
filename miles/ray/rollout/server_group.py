@@ -223,11 +223,13 @@ class ServerGroup:
         for engine_index in engine_indices:
             self.all_engines[engine_index].mark_alive()
 
-    def offload(self):
+    def offload(self, tags: list[str] | None = None):
         if not self.needs_offload:
             return []
         return [
-            engine.actor_handle.release_memory_occupation.remote() for engine in self.engines if engine.is_allocated
+            engine.actor_handle.release_memory_occupation.remote(tags=tags)
+            for engine in self.engines
+            if engine.is_allocated
         ]
 
     def onload(self, tags: list[str] | None = None):
