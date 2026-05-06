@@ -17,7 +17,13 @@ import pytest
 import ray
 
 from miles.ray.rollout.rollout_manager import RolloutManager
-from tests.fast.ray.rollout.conftest import make_args
+from miles.rollout.base_types import (
+    RolloutFnEvalInput,
+    RolloutFnEvalOutput,
+    RolloutFnTrainInput,
+    RolloutFnTrainOutput,
+)
+from tests.fast.ray.rollout.conftest import make_args, make_samples_grouped
 
 
 @pytest.fixture
@@ -358,3 +364,92 @@ class TestRecoverUpdatableEngines:
         assert slot0.is_allocated
         assert slot0.actor_handle is not actor0_before
         assert ray.get(slot0.actor_handle.health_generate.remote(timeout=1.0)) is True
+
+
+@pytest.mark.asyncio
+class TestGenerate:
+    """``generate(rollout_id)`` is the trainer's per-iteration rollout entry
+    point. It must (1) advance ``self.rollout_id``, (2) call the rollout
+    function with ``RolloutFnTrainInput(rollout_id=N)``, (3) postprocess +
+    convert + DP-split the returned samples. Nothing else covers this path."""
+
+    async def test_invokes_rollout_fn_with_correct_input_and_returns_dp_split(
+        self, ray_local_mode, placement_group_factory, tmp_path, patch_low_level,
+    ):
+        args = _make_test_args(tmp_path, models=[("actor", True)])
+        # global_batch_size = number of samples we'll produce (postprocess
+        # trims to a multiple, so equality avoids losing samples).
+        args.global_batch_size = 8
+        pg = placement_group_factory(2)
+
+        manager = _make_manager(args, pg)
+        manager.train_parallel_config = {"dp_size": 2}
+
+        captured: list = []
+        def fake_rollout_fn(input):
+            captured.append(input)
+            return RolloutFnTrainOutput(
+                samples=[make_samples_grouped(n_groups=2, group_size=4)],
+                metrics={"my_metric": 1.23},
+            )
+        manager.generate_rollout = fake_rollout_fn
+
+        result = await manager.generate(rollout_id=42)
+
+        assert manager.rollout_id == 42
+        assert len(captured) == 1
+        assert isinstance(captured[0], RolloutFnTrainInput)
+        assert captured[0].rollout_id == 42
+        # split_train_data_by_dp returns one dict per dp rank
+        assert len(result) == 2
+        for partition in result:
+            assert "tokens" in partition
+            assert "rewards" in partition
+            assert "loss_masks" in partition
+            # 8 samples / 2 dp = 4 per rank
+            assert len(partition["tokens"]) == 4
+
+
+@pytest.mark.asyncio
+class TestEval:
+    async def test_invokes_eval_fn_with_eval_input(
+        self, ray_local_mode, placement_group_factory, tmp_path, patch_low_level,
+    ):
+        args = _make_test_args(tmp_path, models=[("actor", True)])
+        pg = placement_group_factory(2)
+
+        manager = _make_manager(args, pg)
+
+        captured: list = []
+        def fake_eval_fn(input):
+            captured.append(input)
+            return RolloutFnEvalOutput(
+                data={"my_dataset": {"rewards": [0.5, 1.0]}},
+                metrics={},
+            )
+        manager.eval_generate_rollout = fake_eval_fn
+
+        await manager.eval(rollout_id=10)
+
+        assert len(captured) == 1
+        assert isinstance(captured[0], RolloutFnEvalInput)
+        assert captured[0].rollout_id == 10
+
+    async def test_skipped_in_debug_train_only_mode(
+        self, ray_local_mode, placement_group_factory, tmp_path, patch_low_level,
+    ):
+        """``debug_train_only=True`` must short-circuit ``eval`` before the
+        rollout function is invoked — used by trainer-only debug runs that
+        have no rollout cluster."""
+        args = _make_test_args(tmp_path, models=[("actor", True)])
+        args.debug_train_only = True
+        pg = placement_group_factory(2)
+
+        manager = _make_manager(args, pg)
+
+        called: list = []
+        manager.eval_generate_rollout = lambda inp: called.append(inp)
+
+        await manager.eval(rollout_id=10)
+
+        assert called == []
