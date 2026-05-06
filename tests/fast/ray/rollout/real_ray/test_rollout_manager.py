@@ -56,6 +56,12 @@ def _patch_low_level_in_current_process() -> None:
     rmgr.init_tracking = lambda *a, **kw: None
     rmgr.init_http_client = lambda args: None
     rmgr.start_session_server = lambda args: None
+    # default args.data_source_path points at miles.data.dummy which doesn't
+    # exist in this repo; default rollout/eval function paths are similarly
+    # not all importable. None of these are exercised by the routing tests,
+    # so swap with no-op stubs.
+    rmgr.load_function = lambda path: lambda *a, **kw: None
+    rmgr.load_rollout_function = lambda input, path: lambda *a, **kw: None
 
 
 @ray.remote
