@@ -1,12 +1,3 @@
-"""``RolloutServer`` aggregation methods driven through real Ray actors.
-
-Each engine is a real ``MockSGLangEngine`` actor. ``check_weights`` flows
-through real ``asyncio.gather`` over real Ray ObjectRefs — the kind of bug
-that mock-only tests can't catch.
-
-Pure cross-group dataclass-property tests (``engines`` / ``engine_gpu_offsets``
-/ ``nodes_per_engine`` heterogeneity) live in ``tests/fast/ray/rollout/test_rollout_server.py``."""
-
 from __future__ import annotations
 
 import pytest
