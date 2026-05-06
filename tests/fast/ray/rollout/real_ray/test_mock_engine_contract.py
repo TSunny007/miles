@@ -13,7 +13,7 @@ from pathlib import Path
 import pytest
 
 from miles.backends.sglang_utils.sglang_engine import SGLangEngine
-from tests.fast.ray.rollout.real_ray.mock_engine import MockSGLangEngine
+from miles.utils.test_utils.mock_sglang_engine import MockSGLangEngine
 
 
 ROLLOUT_DIR = Path(__file__).resolve().parents[5] / "miles" / "ray" / "rollout"
@@ -59,7 +59,7 @@ def test_mock_implements_every_method_used_in_rollout_dir(used_methods: set[str]
     assert not missing_on_mock, (
         f"MockSGLangEngine is missing real-API methods that are called in "
         f"miles/ray/rollout/: {sorted(missing_on_mock)}. "
-        f"Add stub implementations to mock_engine.py before adding the dependent test."
+        f"Add stub implementations to mock_sglang_engine.py before adding the dependent test."
     )
 
 

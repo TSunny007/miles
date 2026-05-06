@@ -11,7 +11,7 @@ import pytest
 import ray
 
 from tests.fast.ray.rollout.conftest import make_args
-from tests.fast.ray.rollout.real_ray.mock_engine import MockSGLangEngine
+from miles.utils.test_utils.mock_sglang_engine import MockSGLangEngine
 
 
 class TestMockEngineRealRayLifecycle:
