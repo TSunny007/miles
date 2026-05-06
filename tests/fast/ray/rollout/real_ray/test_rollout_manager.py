@@ -171,6 +171,64 @@ class TestStartStopCell:
         assert actor0_after is not actor0_before, "start_cell must produce a fresh actor"
         assert ray.get(actor0_after.health_generate.remote(timeout=1.0)) is True
 
+    async def test_stop_cell_targets_high_id_correctly(
+        self, ray_local_mode, placement_group_factory, tmp_path, patch_low_level,
+    ):
+        """``stop_cell(1)`` (not 0) must kill engine 1, leaving engine 0 alive —
+        guards against off-by-one in ``get_cell_indexer_of_id_map``."""
+        args = _make_test_args(tmp_path, models=[("actor", True)])
+        pg = placement_group_factory(2)
+
+        manager = _make_manager(args, pg)
+        eal = await manager.get_updatable_engines_and_lock()
+        actor0, actor1 = eal.rollout_engines
+
+        await manager.stop_cell(1)
+
+        assert ray.get(actor0.health_generate.remote(timeout=1.0)) is True
+        with pytest.raises((ray.exceptions.RayActorError, ray.exceptions.RayTaskError)):
+            ray.get(actor1.health_generate.remote(timeout=1.0), timeout=10.0)
+
+    async def test_stop_cell_is_idempotent_on_already_stopped(
+        self, ray_local_mode, placement_group_factory, tmp_path, patch_low_level,
+    ):
+        """Calling ``stop_cell(0)`` twice does not raise — production code logs
+        and proceeds when the engine is already de-allocated."""
+        args = _make_test_args(tmp_path, models=[("actor", True)])
+        pg = placement_group_factory(2)
+
+        manager = _make_manager(args, pg)
+        await manager.get_updatable_engines_and_lock()  # ensure engines are alive
+
+        await manager.stop_cell(0)
+        await manager.stop_cell(0)  # must not raise
+
+
+@pytest.mark.asyncio
+class TestCellDispatchAcrossModels:
+    async def test_cells_route_to_correct_model_by_sorted_srv_key(
+        self, ray_local_mode, placement_group_factory, tmp_path, patch_low_level,
+    ):
+        """Cells are flattened in sorted-srv-key order: with models ("actor",
+        "ref") the cells map (0,1)→actor, (2,3)→ref. Stopping cell 2 must hit
+        ref's first engine and leave actor's engines untouched."""
+        args = _make_test_args(tmp_path, models=[("actor", True), ("ref", False)])
+        pg = placement_group_factory(4)
+
+        manager = _make_manager(args, pg)
+        actor_handles = [e.actor_handle for e in manager.servers["actor"].server_groups[0].engines]
+        ref_handles = [e.actor_handle for e in manager.servers["ref"].server_groups[0].engines]
+
+        await manager.stop_cell(2)
+
+        # actor untouched
+        for h in actor_handles:
+            assert ray.get(h.health_generate.remote(timeout=1.0)) is True
+        # ref engine 0 dead, ref engine 1 alive
+        with pytest.raises((ray.exceptions.RayActorError, ray.exceptions.RayTaskError)):
+            ray.get(ref_handles[0].health_generate.remote(timeout=1.0), timeout=10.0)
+        assert ray.get(ref_handles[1].health_generate.remote(timeout=1.0)) is True
+
 
 @pytest.mark.asyncio
 class TestGetUpdatableEnginesAndLock:
@@ -188,3 +246,66 @@ class TestGetUpdatableEnginesAndLock:
         assert eal.engine_gpu_counts == [1, 1]
         assert all(isinstance(h, ray.actor.ActorHandle) for h in eal.rollout_engines)
         assert ray.get(eal.rollout_engines[0].health_generate.remote(timeout=1.0)) is True
+
+    async def test_returns_empty_when_no_updatable_model(
+        self, ray_local_mode, placement_group_factory, tmp_path, patch_low_level,
+    ):
+        """If every model has ``update_weights=False`` (e.g. inference-only
+        deployment), the returned EnginesAndLock has empty engines list and
+        the lock handle is still present (callers always need a lock)."""
+        args = _make_test_args(tmp_path, models=[("ref", False)])
+        pg = placement_group_factory(2)
+
+        manager = _make_manager(args, pg)
+        eal = await manager.get_updatable_engines_and_lock()
+        assert eal.rollout_engines == []
+        assert eal.engine_gpu_counts == []
+        assert eal.has_new_engines is False
+        assert eal.rollout_engine_lock is not None
+
+    async def test_has_new_engines_flag_lifecycle(
+        self, ray_local_mode, placement_group_factory, tmp_path, patch_low_level,
+    ):
+        """Lifecycle the trainer relies on: ``has_new_engines`` is True after
+        init, False after ``clear_updatable_has_new_engines``, True again
+        after ``start_cell`` spawns a fresh engine."""
+        args = _make_test_args(tmp_path, models=[("actor", True)])
+        pg = placement_group_factory(2)
+
+        manager = _make_manager(args, pg)
+        eal_init = await manager.get_updatable_engines_and_lock()
+        assert eal_init.has_new_engines is True
+
+        manager.clear_updatable_has_new_engines()
+        eal_cleared = await manager.get_updatable_engines_and_lock()
+        assert eal_cleared.has_new_engines is False
+
+        await manager.stop_cell(0)
+        await manager.start_cell(0)
+        eal_recovered = await manager.get_updatable_engines_and_lock()
+        assert eal_recovered.has_new_engines is True
+
+
+@pytest.mark.asyncio
+class TestCheckWeights:
+    async def test_check_weights_dispatches_across_all_models(
+        self, ray_local_mode, placement_group_factory, tmp_path, patch_low_level,
+    ):
+        """``check_weights`` fans out to every engine on every server (both
+        updatable + non-updatable) — relied on by the weight-update workflow."""
+        args = _make_test_args(tmp_path, models=[("actor", True), ("ref", False)])
+        pg = placement_group_factory(4)
+
+        manager = _make_manager(args, pg)
+        await manager.get_updatable_engines_and_lock()  # wait for engines to be alive
+
+        results = await manager.check_weights(action="pre_update")
+
+        # Nested gather: [server][group][engine]; 2 servers × 1 group × 2 engines.
+        assert len(results) == 2
+        for per_server in results:
+            assert len(per_server) == 1
+            for per_group in per_server:
+                assert len(per_group) == 2
+                for engine_result in per_group:
+                    assert engine_result == {"_mock": True}
