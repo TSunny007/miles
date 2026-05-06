@@ -144,9 +144,15 @@ def _wrap_forward_step_with_stepping(forward_step_func: Callable) -> Callable:
 def _cleanup_dump_dir(dump_dir: Path) -> None:
     # Only cell 0's rank 0 deletes — avoids race when multiple cells' rank 0
     # all see _get_rank()==0 and try to rmtree the same directory.
+    # Best-effort: stale handles from a peer that crashed (NFS .nfsXXXX stubs)
+    # can make rmtree fail with "Directory not empty"; we don't want that to
+    # propagate up and mark the (healthy) cell as errored.
     indep_dp = get_parallel_state().indep_dp
     if (_get_rank() == 0) and (indep_dp.rank == 0) and dump_dir.is_dir():
-        shutil.rmtree(dump_dir)
+        try:
+            shutil.rmtree(dump_dir)
+        except OSError:
+            logger.warning("dump dir cleanup failed; continuing", exc_info=True)
     if dist.is_initialized():
         dist.barrier()
     if indep_dp.group is not None:
