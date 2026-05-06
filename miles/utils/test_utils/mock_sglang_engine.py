@@ -4,13 +4,52 @@ from __future__ import annotations
 
 import logging
 import threading
+from collections.abc import Callable
+from typing import Any
 
 import ray
 
 logger = logging.getLogger(__name__)
 
 
-@ray.remote
+# Methods that just ``_record + _maybe_fault + return X``. The value is the
+# return value (no test asserts on its shape — sentinels keep the mock close
+# to what the real method's HTTP response shape returns).
+_RECORDING_METHODS: dict[str, Any] = {
+    "health_generate": True,
+    "release_memory_occupation": True,
+    "resume_memory_occupation": True,
+    "update_weights_from_disk": True,
+    "update_weights_from_tensor": True,
+    "flush_cache": True,
+    "pause_generation": None,
+    "continue_generation": None,
+    "update_weight_version": None,
+    "post_process_weights": None,
+    "init_weights_update_group": None,
+    "destroy_weights_update_group": None,
+    "update_weights_from_distributed": None,
+    "load_lora_adapter_from_tensors": None,
+    "unload_lora_adapter": None,
+    "start_profile": None,
+    "stop_profile": None,
+    "check_weights": {"_mock": True},
+    "get_server_info": {"_mock": True},
+    "get_weight_version": "mock-v0",
+    "get_parallelism_info": {"_mock": True},
+    "get_remote_instance_transfer_engine_info": {"_mock": True},
+}
+
+
+def _make_recorder(name: str, return_value: Any) -> Callable:
+    def method(self, *args, **kwargs):
+        self._record(name, args, kwargs)
+        self._maybe_fault(name)
+        return return_value
+    method.__name__ = name
+    return method
+
+
 class MockSGLangEngine:
     """Records every call into ``self.calls`` so tests can assert sequence and
     arguments. Fault injection is set via ``set_fault(method, exception)``."""
@@ -38,7 +77,6 @@ class MockSGLangEngine:
         self._lock = threading.Lock()
 
     def set_fault(self, method: str, exception: BaseException | None):
-        """Schedule the given method to raise on its next call. Pass None to clear."""
         if exception is None:
             self._faults.pop(method, None)
         else:
@@ -65,91 +103,9 @@ class MockSGLangEngine:
         self.initialized = False
         return True
 
-    def health_generate(self, timeout: float = 5.0):
-        self._record("health_generate", (), {"timeout": timeout})
-        self._maybe_fault("health_generate")
-        return True
-
-    def release_memory_occupation(self, tags: list[str] | None = None):
-        self._record("release_memory_occupation", (), {"tags": tags})
-        self._maybe_fault("release_memory_occupation")
-        return True
-
-    def resume_memory_occupation(self, tags: list[str] | None = None):
-        self._record("resume_memory_occupation", (), {"tags": tags})
-        self._maybe_fault("resume_memory_occupation")
-        return True
-
-    def update_weights_from_disk(self, model_path: str, load_format: str | None = None):
-        self._record("update_weights_from_disk", (model_path,), {"load_format": load_format})
-        self._maybe_fault("update_weights_from_disk")
-        return True
-
-    def update_weights_from_tensor(self, *args, **kwargs):
-        self._record("update_weights_from_tensor", args, kwargs)
-        return True
-
-    def check_weights(self, action: str):
-        self._record("check_weights", (action,), {})
-        return {"_mock": True, "action": action}
-
-    def get_server_info(self):
-        self._record("get_server_info", (), {})
-        return {"rank": self.rank, "worker_type": self.worker_type}
-
-    def get_weight_version(self):
-        self._record("get_weight_version", (), {})
-        return "mock-v0"
-
-    def get_parallelism_info(self, rank: int):
-        self._record("get_parallelism_info", (rank,), {})
-        return {"rank": rank}
-
-    def flush_cache(self):
-        self._record("flush_cache", (), {})
-        return True
-
-    def pause_generation(self):
-        self._record("pause_generation", (), {})
-
-    def continue_generation(self):
-        self._record("continue_generation", (), {})
-
-    def update_weight_version(self, weight_version: str):
-        self._record("update_weight_version", (weight_version,), {})
-
-    def post_process_weights(self, *args, **kwargs):
-        self._record("post_process_weights", args, kwargs)
-
-    def init_weights_update_group(self, *args, **kwargs):
-        self._record("init_weights_update_group", args, kwargs)
-
-    def destroy_weights_update_group(self, *args, **kwargs):
-        self._record("destroy_weights_update_group", args, kwargs)
-
-    def update_weights_from_distributed(self, *args, **kwargs):
-        self._record("update_weights_from_distributed", args, kwargs)
-
-    def get_remote_instance_transfer_engine_info(self, rank: int):
-        self._record("get_remote_instance_transfer_engine_info", (rank,), {})
-        return {"rank": rank}
-
-    def load_lora_adapter_from_tensors(self, *args, **kwargs):
-        self._record("load_lora_adapter_from_tensors", args, kwargs)
-
-    def unload_lora_adapter(self, lora_name: str):
-        self._record("unload_lora_adapter", (lora_name,), {})
-
-    def start_profile(self, *args, **kwargs):
-        self._record("start_profile", args, kwargs)
-
-    def stop_profile(self):
-        self._record("stop_profile", (), {})
-
     def simulate_crash(self):
         # Real SGLangEngine.simulate_crash calls self.shutdown() (only the http
-        # server dies; the actor itself stays alive). Mirror that or any test
-        # depending on actor-still-alive semantics will diverge from prod.
+        # server dies; the actor itself stays alive). Mirror that.
         self._record("simulate_crash", (), {})
         self.shutdown()
 
@@ -167,3 +123,10 @@ class MockSGLangEngine:
         exc = self._faults.pop(method, None)
         if exc is not None:
             raise exc
+
+
+for _name, _retval in _RECORDING_METHODS.items():
+    setattr(MockSGLangEngine, _name, _make_recorder(_name, _retval))
+
+
+MockSGLangEngine = ray.remote(MockSGLangEngine)
