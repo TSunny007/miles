@@ -31,12 +31,12 @@ class InMemoryCheckpointManager:
         return self.latest_iteration
 
     def load(self) -> tuple[object, str]:
+        # Idempotent: Megatron's load_checkpoint calls _load_base_checkpoint twice
+        # (once for format detection at line 1508, once for actual load at line 1712).
+        # We must NOT consume `_state_dict` on first call.
         assert self.latest_iteration >= 0, "No in-memory checkpoint available"
         assert self._state_dict is not None
-        ans = self._state_dict
-        self._state_dict = None
-
-        return ans, f"in-memory-ckpt-iter-{self.latest_iteration}"
+        return self._state_dict, f"in-memory-ckpt-iter-{self.latest_iteration}"
 
 
 def save_to_memory(
