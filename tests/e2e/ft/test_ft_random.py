@@ -5,6 +5,7 @@ import logging
 import random
 import sys
 import threading
+import time
 from pathlib import Path
 from typing import Annotated
 
@@ -26,7 +27,12 @@ from miles.utils.test_utils.fault_injector import FailureMode
 app: typer.Typer = typer.Typer()
 
 _CONTROL_SERVER_PORT: int = 18080
-_MEAN_INTERVAL_SECONDS: float = 15.0
+_MEAN_INTERVAL_SECONDS: float = 30.0
+# Hard floor between consecutive injections so the FT controller has time to
+# spawn the replacement actor and let it rejoin before the next crash. Without
+# this, the exponential delay can produce several injections within a few
+# seconds, causing the all-cells-dead cascade.
+_MIN_GAP_BETWEEN_INJECTIONS_SECONDS: float = 30.0
 _FAILURE_MODES: list[FailureMode] = [FailureMode.SIGKILL, FailureMode.EXIT, FailureMode.SEGFAULT]
 
 
@@ -38,11 +44,21 @@ def _run_fault_injection_loop(
     stop_event: threading.Event,
 ) -> None:
     rng = random.Random(seed)
+    last_injection_at: float = 0.0
 
     while not stop_event.is_set():
         delay = rng.expovariate(1.0 / mean_interval_seconds)
         if stop_event.wait(timeout=delay):
             break
+
+        elapsed = time.monotonic() - last_injection_at
+        if elapsed < _MIN_GAP_BETWEEN_INJECTIONS_SECONDS:
+            logger.info(
+                "Skipping injection: only %.1fs since last, need %.1fs",
+                elapsed,
+                _MIN_GAP_BETWEEN_INJECTIONS_SECONDS,
+            )
+            continue
 
         try:
             resp = requests.get(f"{base_url}/api/v1/cells", timeout=5)
@@ -53,7 +69,15 @@ def _run_fault_injection_loop(
             continue
 
         alive = [c for c in cells if c["status"]["phase"] == "Running"]
-        if len(alive) <= 1:
+        # Only inject when ALL known cells report Running. Any cell mid-recovery
+        # (Pending / Failed / etc) means we should wait — injecting another
+        # fault now risks the all-cells-dead cascade.
+        if len(alive) < len(cells) or len(alive) <= 1:
+            logger.info(
+                "Skipping injection: %d/%d cells alive (waiting for full recovery)",
+                len(alive),
+                len(cells),
+            )
             continue
 
         target = rng.choice(alive)
@@ -67,6 +91,7 @@ def _run_fault_injection_loop(
                 timeout=5,
             )
             resp.raise_for_status()
+            last_injection_at = time.monotonic()
         except Exception:
             logger.info("Failed to inject fault into %s", cell_name, exc_info=True)
 
