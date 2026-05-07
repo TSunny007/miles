@@ -377,20 +377,6 @@ def get_data_iterator(
     num_local_gbs = global_batch_size // dp_size
     num_steps_per_rollout = num_local_samples // num_local_gbs
 
-    logger.info(
-        f"[DEBUG_COMPARE] get_data_iterator: "
-        f"args.global_batch_size={args.global_batch_size}, effective_global_batch_size={global_batch_size}, "
-        f"dp_size={dp_size}, cp_size={cp_size}, vpp_size={vpp_size}, "
-        f"num_local_samples={num_local_samples}, num_local_gbs={num_local_gbs}, "
-        f"num_steps_per_rollout={num_steps_per_rollout}, "
-        f"args.world_size={args.world_size}, args.indep_dp={getattr(args, 'indep_dp', False)}, "
-        f"use_dynamic_batch_size={args.use_dynamic_batch_size}, "
-        f"max_tokens_per_gpu={getattr(args, 'max_tokens_per_gpu', None)}, "
-        f"total_lengths_stats=(len={len(rollout_data['total_lengths'])}, "
-        f"min={min(rollout_data['total_lengths'])}, max={max(rollout_data['total_lengths'])}, "
-        f"sum={sum(rollout_data['total_lengths'])})"
-    )
-
     if global_batch_size != args.global_batch_size:
         logger.info(
             f"Using dynamic global_batch_size={global_batch_size} (original={args.global_batch_size}), "
@@ -446,12 +432,6 @@ def get_data_iterator(
         assert len(set(sum(micro_batch_indices, []))) == num_local_samples
 
         data_iterator = _generate_data_iterator(rollout_data, None, micro_batch_indices)
-
-    logger.info(
-        f"[DEBUG_COMPARE] get_data_iterator result: "
-        f"num_microbatches={num_microbatches}, "
-        f"use_dynamic_batch_size={args.use_dynamic_batch_size}"
-    )
 
     return (
         data_iterator,

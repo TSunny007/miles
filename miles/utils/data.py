@@ -293,15 +293,6 @@ def process_rollout_data(
     partition = rollout_data.pop("partition")
     total_lengths = rollout_data["total_lengths"]
 
-    logger.info(
-        f"[DEBUG_COMPARE] process_rollout_data: "
-        f"dp_rank={dp_rank}, dp_size={dp_size}, "
-        f"delay_split={args.delay_split_train_data_by_dp}, "
-        f"indep_dp={getattr(args, 'indep_dp', False)}, "
-        f"num_samples_before_partition={len(total_lengths)}, "
-        f"partition_size={len(partition)}"
-    )
-
     # save the seqlen of the whole rollout batch
     Timer().seq_lens = total_lengths
     rollout_data["total_lengths"] = [total_lengths[i] for i in partition]

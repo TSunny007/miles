@@ -2189,22 +2189,6 @@ def miles_validate_args(args):
             args.use_dynamic_batch_size is False
         ), "Dynamic batch size is not supported for bshd format. Please specify --micro-batch-size instead."
 
-    logger.info(
-        f"[DEBUG_COMPARE] miles_validate_args summary: "
-        f"world_size={args.world_size}, global_batch_size={args.global_batch_size}, "
-        f"micro_batch_size={getattr(args, 'micro_batch_size', None)}, "
-        f"indep_dp={getattr(args, 'indep_dp', False)}, "
-        f"delay_split_train_data_by_dp={getattr(args, 'delay_split_train_data_by_dp', False)}, "
-        f"use_dynamic_batch_size={getattr(args, 'use_dynamic_batch_size', False)}, "
-        f"max_tokens_per_gpu={getattr(args, 'max_tokens_per_gpu', None)}, "
-        f"tp={getattr(args, 'tensor_model_parallel_size', None)}, "
-        f"pp={getattr(args, 'pipeline_model_parallel_size', None)}, "
-        f"cp={getattr(args, 'context_parallel_size', None)}, "
-        f"ep={getattr(args, 'expert_model_parallel_size', 1)}, "
-        f"rollout_batch_size={getattr(args, 'rollout_batch_size', None)}, "
-        f"n_samples_per_prompt={getattr(args, 'n_samples_per_prompt', None)}"
-    )
-
     _maybe_apply_dumper_overrides(args)
 
 
