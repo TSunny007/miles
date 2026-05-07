@@ -137,7 +137,7 @@ def setup_model_and_optimizer(
         model = get_model(get_model_provider_func(args, role), ModelType.encoder_or_decoder)
 
     if args.debug_disable_optimizer:
-        if is_megatron_main_rank():
+        if is_first_replica_megatron_main_rank():
             logger.warning(
                 "Skipping Megatron optimizer and LR scheduler initialization "
                 "because --debug-disable-optimizer is set."
