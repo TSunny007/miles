@@ -405,14 +405,15 @@ def run_all_checks(
 #
 # The string-based primitive above asserts text-prefix at the chat-template
 # layer.  This is necessary but not sufficient for production correctness —
-# production runs ``get_tito_tokenizer(...)`` and exercises ``merge_tokens``
-# (model-specific token-level boundary patches) plus
+# production runs ``get_tito_tokenizer(...)`` and exercises
+# ``tokenize`` (model-specific token-level boundary patches) plus
 # ``tokenize_additional_non_assistant`` (renders appended segments under a
 # synthetic ``[_DUMMY_SYSTEM, ...]`` context, not the real history).
 #
 # The primitive below mirrors the production path: it instantiates the actual
-# TITO subclass + HF tokenizer, runs ``merge_tokens`` against the encoded
-# prefix, decodes, and asserts text equality with the canonical full render.
+# TITO subclass + HF tokenizer, runs ``tokenize`` against the
+# encoded prefix, decodes, and asserts text equality with the canonical full
+# render.
 
 
 def verify_append_only_via_tito_instance(
@@ -426,7 +427,7 @@ def verify_append_only_via_tito_instance(
 ) -> VerifyResult:
     """Decode-roundtrip verify with a pre-built TITO instance.
 
-    Asserts ``decode(tito.merge_tokens(prefix_msgs, full_msgs, encode(prefix_text)))
+    Asserts ``decode(tito.tokenize(prefix_msgs, full_msgs, encode(prefix_text)))
     == full_text`` where ``prefix_text`` and ``full_text`` come from running the
     chat template through ``tokenizer`` with the same kwargs ``tito`` was built
     with.  The test-only path (e.g. ``BuggyQwen3TITOTokenizer``) uses this
@@ -437,7 +438,7 @@ def verify_append_only_via_tito_instance(
         # TITO's incremental path requires the appendix to be all non-assistant.
         # From the pretokenized boundary N, greedily extend M forward over the
         # maximal non-assistant run — that's the chunk production would call
-        # merge_tokens for (between two assistant generations, or up to end).
+        # tokenize for (between two assistant generations, or up to end).
         n = pretokenized_num_message
         m = n
         while m < len(messages) and messages[m].get("role") != "assistant":
@@ -473,13 +474,13 @@ def verify_append_only_via_tito_instance(
         # tokens the chat template would otherwise emit (Qwen's ``\n`` after
         # ``<|im_end|>``, GLM's ambiguous ``<|user|>``/``<|observation|>`` boundary).
         # The TITO subclass declares those as ``trailing_token_ids``.  Trim them
-        # here so ``merge_tokens``'s boundary patches see the prefix in its
-        # production shape so the verifier sees the same prefix the
-        # subclass merge_tokens / trailing trim path operates on.
+        # here so ``tokenize``'s boundary patches see the prefix in
+        # its production shape so the verifier sees the same prefix the
+        # subclass tokenize / trailing trim path operates on.
         trailing = tito.trailing_token_ids
         while prefix_ids and prefix_ids[-1] in trailing:
             prefix_ids = prefix_ids[:-1]
-        merged_ids = tito.merge_tokens(prefix_msgs, full_msgs, prefix_ids, tools=tools)
+        merged_ids = tito.tokenize(prefix_msgs, full_msgs, prefix_ids, tools=tools)
         merged_text = tokenizer.decode(merged_ids)
 
         if merged_text == full_text:
@@ -520,8 +521,8 @@ def verify_append_only_via_tito(
 
     Matches the production wiring at ``miles/rollout/session/sessions.py:35`` —
     the same ``get_tito_tokenizer`` factory call, with ``chat_template_kwargs``
-    threaded through so ``merge_tokens`` and the dummy-context segment renders
-    use the same kwargs as the reference full render.
+    threaded through so ``tokenize`` and the dummy-context segment
+    renders use the same kwargs as the reference full render.
     """
     from miles.utils.chat_template_utils import get_tito_tokenizer
 

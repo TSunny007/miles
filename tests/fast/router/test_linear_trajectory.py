@@ -52,7 +52,7 @@ class _MockTITOTokenizer(TITOTokenizer):
     ) -> list[int]:
         return []
 
-    def merge_tokens(
+    def tokenize(
         self,
         old_messages: list[dict[str, Any]],
         new_messages: list[dict[str, Any]],

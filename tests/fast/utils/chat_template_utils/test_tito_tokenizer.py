@@ -1,4 +1,4 @@
-"""Tests for TITOTokenizer: merge_tokens boundary logic, incremental tokenization, and factory.
+"""Tests for TITOTokenizer: tokenize boundary logic, incremental tokenization, and factory.
 
 ## Test structure
 
@@ -8,15 +8,16 @@ TestConfig
     them to the comparator.  These are NOT behavioral tests — they guard
     against accidental config regressions when modifying __init__.
 
-TestMergeTokensBoundary
-    Unit tests for the core merge_tokens boundary logic, using *synthetic*
-    prefix IDs ([100, 200, ...]) so the assertions are purely about prefix
-    manipulation — not about template rendering.
+TestTokenizeBoundary
+    Unit tests for the core tokenize boundary logic, using
+    *synthetic* prefix IDs ([100, 200, ...]) so the assertions are purely
+    about prefix manipulation — not about template rendering.
 
-    Why synthetic IDs?  merge_tokens is: ``prefix + [boundary fix] + incremental``.
-    The incremental part comes from tokenize_additional_non_assistant (tested
-    separately); boundary logic depends only on the last token of the prefix.
-    Synthetic IDs isolate this and make failures trivially diagnosable.
+    Why synthetic IDs?  tokenize is:
+    ``prefix + [boundary fix] + incremental``.  The incremental part comes
+    from tokenize_additional_non_assistant (tested separately); boundary
+    logic depends only on the last token of the prefix.  Synthetic IDs
+    isolate this and make failures trivially diagnosable.
 
     Covers three subclass behaviors:
     - Qwen3: inserts ``\\n`` when prefix ends with ``<|im_end|>`` (model stops
@@ -244,44 +245,44 @@ class TestConfig:
 _BND_OLD, _BND_NEW, _BND_TOOLS = _split_at(SingleToolTrajectory, 3)
 
 
-class TestMergeTokensBoundary:
-    """merge_tokens correctly manipulates the prefix before concatenating incremental tokens."""
+class TestTokenizeBoundary:
+    """tokenize correctly manipulates the prefix before concatenating incremental tokens."""
 
     # -- Qwen3: insert \n after <|im_end|> --
 
     def test_qwen3_inserts_newline_after_im_end(self, qwen3_tito: Qwen3TITOTokenizer):
-        """Model stops at <|im_end|> without trailing \\n; merge_tokens inserts it."""
+        """Model stops at <|im_end|> without trailing \\n; tokenize inserts it."""
         incremental = qwen3_tito.tokenize_additional_non_assistant(_BND_OLD, _BND_NEW, _BND_TOOLS)
         im_end = qwen3_tito._im_end_id
         nl = qwen3_tito._newline_id
 
-        result = qwen3_tito.merge_tokens(_BND_OLD, _BND_NEW, [100, 200, im_end], _BND_TOOLS)
+        result = qwen3_tito.tokenize(_BND_OLD, _BND_NEW, [100, 200, im_end], _BND_TOOLS)
         assert result == [100, 200, im_end, nl] + incremental
 
     def test_qwen3_no_newline_otherwise(self, qwen3_tito: Qwen3TITOTokenizer):
         """No insertion when prefix does not end with <|im_end|>."""
         incremental = qwen3_tito.tokenize_additional_non_assistant(_BND_OLD, _BND_NEW, _BND_TOOLS)
-        result = qwen3_tito.merge_tokens(_BND_OLD, _BND_NEW, [100, 200, 300], _BND_TOOLS)
+        result = qwen3_tito.tokenize(_BND_OLD, _BND_NEW, [100, 200, 300], _BND_TOOLS)
         assert result == [100, 200, 300] + incremental
 
     # -- GLM47: strip ambiguous boundary tokens --
 
     def test_glm47_strips_observation(self, glm47_tito: GLM47TITOTokenizer):
-        """Model emits <|observation|> as stop token; merge_tokens strips the duplicate."""
+        """Model emits <|observation|> as stop token; tokenize strips the duplicate."""
         incremental = glm47_tito.tokenize_additional_non_assistant(_BND_OLD, _BND_NEW, _BND_TOOLS)
-        result = glm47_tito.merge_tokens(_BND_OLD, _BND_NEW, [100, 200, glm47_tito._observation_id], _BND_TOOLS)
+        result = glm47_tito.tokenize(_BND_OLD, _BND_NEW, [100, 200, glm47_tito._observation_id], _BND_TOOLS)
         assert result == [100, 200] + incremental
 
     def test_glm47_strips_user(self, glm47_tito: GLM47TITOTokenizer):
         """<|user|> is also an ambiguous boundary — stripped the same way."""
         incremental = glm47_tito.tokenize_additional_non_assistant(_BND_OLD, _BND_NEW, _BND_TOOLS)
-        result = glm47_tito.merge_tokens(_BND_OLD, _BND_NEW, [100, 200, glm47_tito._user_id], _BND_TOOLS)
+        result = glm47_tito.tokenize(_BND_OLD, _BND_NEW, [100, 200, glm47_tito._user_id], _BND_TOOLS)
         assert result == [100, 200] + incremental
 
     def test_glm47_no_strip_otherwise(self, glm47_tito: GLM47TITOTokenizer):
         """Non-boundary trailing token is preserved."""
         incremental = glm47_tito.tokenize_additional_non_assistant(_BND_OLD, _BND_NEW, _BND_TOOLS)
-        result = glm47_tito.merge_tokens(_BND_OLD, _BND_NEW, [100, 200, 300], _BND_TOOLS)
+        result = glm47_tito.tokenize(_BND_OLD, _BND_NEW, [100, 200, 300], _BND_TOOLS)
         assert result == [100, 200, 300] + incremental
 
     # -- Default: no boundary handling --
@@ -289,7 +290,7 @@ class TestMergeTokensBoundary:
     def test_default_concatenates(self, default_tito: TITOTokenizer):
         """Base class does plain concatenation without any prefix modification."""
         incremental = default_tito.tokenize_additional_non_assistant(_BND_OLD, _BND_NEW, _BND_TOOLS)
-        result = default_tito.merge_tokens(_BND_OLD, _BND_NEW, [100, 200, 300], _BND_TOOLS)
+        result = default_tito.tokenize(_BND_OLD, _BND_NEW, [100, 200, 300], _BND_TOOLS)
         assert result == [100, 200, 300] + incremental
 
     # -- Edge case --
@@ -297,7 +298,7 @@ class TestMergeTokensBoundary:
     def test_empty_prefix(self, qwen3_tito: Qwen3TITOTokenizer):
         """Empty prefix → no boundary handling, result is just incremental."""
         incremental = qwen3_tito.tokenize_additional_non_assistant(_BND_OLD, _BND_NEW, _BND_TOOLS)
-        result = qwen3_tito.merge_tokens(_BND_OLD, _BND_NEW, [], _BND_TOOLS)
+        result = qwen3_tito.tokenize(_BND_OLD, _BND_NEW, [], _BND_TOOLS)
         assert result == incremental
 
 
@@ -418,7 +419,7 @@ class TestTokenizeAdditional:
             add_generation_prompt=False,
             tools=tools,
         )
-        merged = qwen3_tito.merge_tokens(old_msgs, new_msgs, pretokenized, tools)
+        merged = qwen3_tito.tokenize(old_msgs, new_msgs, pretokenized, tools)
         expected = apply_chat_template(
             new_msgs,
             tokenizer=qwen3_tito.tokenizer,

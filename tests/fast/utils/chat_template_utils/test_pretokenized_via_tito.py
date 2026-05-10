@@ -129,21 +129,21 @@ def test_via_tito_fail_on_original_qwen3_template():
 class _BuggyQwen3TITOTokenizer(Qwen3TITOTokenizer):
     """Test-only Qwen3 variant with the ``\\n`` boundary insertion deleted.
 
-    Real ``Qwen3TITOTokenizer.merge_tokens`` appends ``self._newline_id`` after
-    a trailing ``<|im_end|>`` because the model stops without emitting the
-    newline the chat template would otherwise produce.  This variant skips
+    Real ``Qwen3TITOTokenizer.tokenize`` appends ``self._newline_id``
+    after a trailing ``<|im_end|>`` because the model stops without emitting
+    the newline the chat template would otherwise produce.  This variant skips
     that fixup; the decode-roundtrip primitive is expected to surface it as a
     single-character diff at the prefix-suffix junction.
     """
 
-    def merge_tokens(self, old_messages, new_messages, pretokenized_token_ids, tools=None):
+    def tokenize(self, old_messages, new_messages, pretokenized_token_ids, tools=None):
         incremental = self.tokenize_additional_non_assistant(old_messages, new_messages, tools)
         # Intentionally omit the `+\n` insertion — that's the bug we're catching.
         return list(pretokenized_token_ids) + incremental
 
 
 def test_via_tito_fail_on_buggy_qwen3_subclass():
-    """A buggy ``merge_tokens`` produces a junction-level diff that the verifier surfaces."""
+    """A buggy ``tokenize`` produces a junction-level diff that the verifier surfaces."""
     tokenizer, _ = _setup_tokenizer_with_registered_template("Qwen/Qwen3-0.6B", TITOTokenizerType.QWEN3, ["tool"])
     buggy = _BuggyQwen3TITOTokenizer(tokenizer, allowed_append_roles=["tool"])
 

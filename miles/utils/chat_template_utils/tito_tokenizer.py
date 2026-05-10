@@ -13,8 +13,8 @@ with role-specific synthetic prefixes:
 
 The appended suffix is processed left-to-right, then the generation prompt for
 the next assistant turn is appended once at the end.  Model-specific
-subclasses only override ``merge_tokens`` for boundary quirks at the prefix
-junction.
+subclasses only override ``tokenize`` for boundary quirks at the
+prefix junction.
 """
 
 from __future__ import annotations
@@ -233,8 +233,8 @@ class TITOTokenizer:
 
         Returns:
             Incremental token IDs (including the generation prompt) that,
-            when merged with pretokenized prefix via ``merge_tokens``,
-            form the full prompt token IDs.
+            when stacked onto the pretokenized prefix via
+            ``tokenize``, form the full prompt token IDs.
         """
         assert_messages_append_only_with_allowed_role(old_messages, new_messages, self.allowed_append_roles)
         appended_messages = new_messages[len(old_messages) :]
@@ -261,18 +261,20 @@ class TITOTokenizer:
             add_generation_prompt=True,
         )
 
-    def merge_tokens(
+    def tokenize(
         self,
         old_messages: list[dict[str, Any]],
         new_messages: list[dict[str, Any]],
         pretokenized_token_ids: list[int],
         tools: list[dict[str, Any]] | None = None,
     ) -> list[int]:
-        """Merge *pretokenized_token_ids* with incremental tokens to produce
-        the complete prompt token IDs (including generation prompt).
+        """Build the full prompt input_ids for *new_messages* by reusing the
+        pretokenized prefix from *old_messages* plus incrementally tokenized
+        non-assistant content (and the next-turn generation prompt).
 
         The default implementation is simple concatenation.  Subclasses
-        override this to handle model-specific boundary token logic.
+        override this to handle model-specific boundary token logic at the
+        junction between the prefix and the incremental tokens.
         """
         incremental = self.tokenize_additional_non_assistant(old_messages, new_messages, tools)
         return list(pretokenized_token_ids) + incremental
@@ -288,8 +290,8 @@ class Qwen3TITOTokenizer(TITOTokenizer):
 
     The Qwen3 chat template emits ``<|im_end|>\\n`` after every message, but
     the model stops at ``<|im_end|>`` without generating the trailing ``\\n``.
-    ``merge_tokens`` inserts the missing newline so that the pretokenized
-    prefix matches the canonical template output.
+    ``tokenize`` inserts the missing newline so that the
+    pretokenized prefix matches the canonical template output.
     """
 
     reasoning_parser = "qwen3"
@@ -328,7 +330,7 @@ class Qwen3TITOTokenizer(TITOTokenizer):
         self._im_end_id: int = tokenizer.convert_tokens_to_ids("<|im_end|>")
         self.trailing_token_ids = frozenset({self._newline_id})
 
-    def merge_tokens(
+    def tokenize(
         self,
         old_messages: list[dict[str, Any]],
         new_messages: list[dict[str, Any]],
@@ -390,15 +392,16 @@ class QwenNextTITOTokenizer(Qwen3TITOTokenizer):
 
 
 class GLM47TITOTokenizer(TITOTokenizer):
-    """GLM 4.7 variant: handles ambiguous boundary tokens in ``merge_tokens``.
+    """GLM 4.7 variant: handles ambiguous boundary tokens in
+    ``tokenize``.
 
     ``<|user|>`` and ``<|observation|>`` are both assistant stop tokens *and*
-    next-message start tokens in the chat template.  In ``merge_tokens``,
-    the last token of the pretokenized prefix is always stripped when it is
-    one of these boundary tokens — whether it matches the first incremental
-    token (overlap) or differs (e.g. model stopped with ``<|observation|>`` but
-    next turn is ``<|user|>`` because the tool call failed and a system message
-    is injected instead).
+    next-message start tokens in the chat template.  In
+    ``tokenize``, the last token of the pretokenized prefix is
+    always stripped when it is one of these boundary tokens — whether it
+    matches the first incremental token (overlap) or differs (e.g. model
+    stopped with ``<|observation|>`` but next turn is ``<|user|>`` because
+    the tool call failed and a system message is injected instead).
     """
 
     reasoning_parser = "glm45"
@@ -444,7 +447,7 @@ class GLM47TITOTokenizer(TITOTokenizer):
         self._ambiguous_boundary_ids: set[int] = {self._observation_id, self._user_id}
         self.trailing_token_ids = frozenset(self._ambiguous_boundary_ids)
 
-    def merge_tokens(
+    def tokenize(
         self,
         old_messages: list[dict[str, Any]],
         new_messages: list[dict[str, Any]],

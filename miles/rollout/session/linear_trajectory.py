@@ -80,7 +80,7 @@ class LinearTrajectory:
         except ValueError as e:
             raise MessageValidationError(f"{e}; to allow more roles use --tito-allowed-append-roles") from e
 
-        return tito_tokenizer.merge_tokens(
+        return tito_tokenizer.tokenize(
             old_messages=self.messages,
             new_messages=request_messages,
             pretokenized_token_ids=self.token_ids,
