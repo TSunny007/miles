@@ -131,7 +131,7 @@ A `run_agent` receives a session-scoped `base_url`. Send OpenAI-format chat requ
 to `base_url/v1/chat/completions` and pass the `messages` list as the prompt.
 
 ```python
-from miles.utils.http_utils import post
+from miles.utils.net_utils import post
 
 
 async def run_agent(base_url: str, prompt, request_kwargs: dict | None = None) -> None:
