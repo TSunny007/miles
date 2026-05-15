@@ -8,7 +8,6 @@ register_cuda_ci(
     est_time=1800,
     suite="stage-c-megatron-8-gpu",
     num_gpus=8,
-    disabled="Timeout after 1800s on CI (pre-existing, not caused by CI refactor)",
 )
 
 TIGHT_HOST_MEMORY = bool(int(os.environ.get("MILES_TEST_TIGHT_HOST_MEMORY", "1")))
