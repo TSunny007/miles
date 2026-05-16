@@ -9,6 +9,9 @@ On-policy distillation (OPD) enables a student model to learn from a larger teac
 | `--use-opd` | Enable on-policy distillation. Required flag to use OPD. |
 | `--opd-type` | Type of OPD: `sglang` or `megatron`. Required when `--use-opd` is set. |
 | `--opd-kl-coef` | OPD KL penalty coefficient (default: 1.0). Controls the weight of the distillation signal relative to the RL advantage. |
+| `--opd-log-prob-top-k` | Number of top-k tokens retained for the Rethinking OPD token reward. `0` uses sampled-token OPD; `16` matches the paper recipe default. |
+| `--opd-top-k-strategy` | Top-k token set strategy: `only_stu`, `only_tch`, `intersection`, `union`, or `union-intersection`. |
+| `--opd-reward-weight-mode` | Weighting scheme for top-k rewards: `student_p`, `teacher_p`, or `none`. |
 | `--opd-teacher-load` | Path to teacher Megatron checkpoint. **Required** when `--opd-type=megatron`, **must not be set** when `--opd-type=sglang`. |
 | `--opd-teacher-ckpt-step` | Optional checkpoint step for teacher model. |
 
@@ -23,6 +26,22 @@ $$
 Where $A_t$ is the original advantage from the base estimator (e.g., GRPO), $\lambda_{\text{opd}}$ is `--opd-kl-coef`, and $D_{\text{KL}}$ is the token-level reverse KL divergence.
 
 This means OPD can be combined with any advantage estimator, including GRPO, PPO, REINFORCE++, and GSPO.
+
+## Rethinking OPD Top-K Reward
+
+SGLang OPD supports the top-k token reward recipe from [Rethinking On-Policy Distillation](https://arxiv.org/abs/2604.13016). Set `--opd-log-prob-top-k` above zero to request student rollout top-logprobs, score the same sequence with the teacher, and aggregate a weighted reverse-KL estimate over a selected token set at each response position.
+
+The token set is controlled by `--opd-top-k-strategy`:
+
+| Strategy | Token set |
+|----------|-----------|
+| `only_stu` | Student top-k tokens, with teacher logprobs queried for those IDs. |
+| `only_tch` | Teacher top-k tokens, with student logprobs queried for those IDs. |
+| `intersection` | Tokens appearing in both top-k sets. |
+| `union` | Tokens appearing in either top-k set, with duplicates removed. |
+| `union-intersection` | Tokens appearing in exactly one top-k set. |
+
+`--opd-reward-weight-mode` controls whether each selected token is weighted by student probability, teacher probability, or uniformly. For compatibility, `--opd-log-prob-top-k=0` keeps the original sampled-token OPD path.
 
 ## Two Teacher Modes
 
@@ -43,6 +62,9 @@ The teacher runs on an external SGLang server. Teacher log-probs are obtained du
 --use-opd
 --opd-type sglang
 --opd-kl-coef 1.0
+--opd-log-prob-top-k 16
+--opd-top-k-strategy only_stu
+--opd-reward-weight-mode student_p
 --custom-rm-path miles.rollout.on_policy_distillation.reward_func
 --custom-reward-post-process-path miles.rollout.on_policy_distillation.post_process_rewards
 --rm-url http://<TEACHER_IP>:<TEACHER_PORT>/generate

@@ -16,6 +16,9 @@ This example shows how to run **on-policy distillation (OPD)** using miles. A sm
 | `--use-opd` | Enable on-policy distillation. Required flag to use OPD. |
 | `--opd-type` | Type of OPD: `sglang` or `megatron`. Required when `--use-opd` is set. |
 | `--opd-kl-coef` | OPD KL penalty coefficient (default: 1.0). The teacher KL is added to advantages as: `opd_advantage = base_advantage - opd_kl_coef * (student_logp - teacher_logp)`. Larger values pull the student more strongly toward the teacher. |
+| `--opd-log-prob-top-k` | Number of top-k tokens retained for the Rethinking OPD token reward. `0` uses sampled-token OPD; `16` matches the paper recipe default. |
+| `--opd-top-k-strategy` | Top-k token set strategy: `only_stu`, `only_tch`, `intersection`, `union`, or `union-intersection`. |
+| `--opd-reward-weight-mode` | Weighting scheme for top-k rewards: `student_p`, `teacher_p`, or `none`. |
 | `--opd-teacher-load` | Path to teacher checkpoint directory. **Required** when `--opd-type=megatron`, **must not be set** when `--opd-type=sglang`. |
 | `--opd-teacher-ckpt-step` | Optional. Selects a specific iteration inside `--opd-teacher-load` (overrides `latest_checkpointed_iteration.txt`). Mirrors `--ref-ckpt-step`. Leave unset to use the latest checkpoint in the directory. |
 
@@ -32,7 +35,8 @@ This example shows how to run **on-policy distillation (OPD)** using miles. A sm
 
 - `miles/rollout/on_policy_distillation.py` implements (for SGLang mode):
   - `reward_func` calls the teacher server (via `args.rm_url`) with every sample to obtain token-level logprobs.
-  - `post_process_rewards` trims the teacher logprobs to the generated response span and writes the tensors back to each `Sample` to compute advantages.
+  - With `--opd-log-prob-top-k=0`, `post_process_rewards` trims sampled-token teacher logprobs to the generated response span and writes the tensors back to each `Sample`.
+  - With `--opd-log-prob-top-k>0`, it computes the weighted top-k reverse-KL estimate from Rethinking OPD and stores it as the per-token OPD penalty.
 - `run-qwen3-8B-opd.sh` launches an SGLang teacher server, then submits a Ray job that runs `train.py`.
 - `run-qwen3-8B-opd-megatron.sh` uses Megatron-loaded teacher model (no external server needed).
 
