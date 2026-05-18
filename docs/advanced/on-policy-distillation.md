@@ -1,6 +1,6 @@
 # On-Policy Distillation
 
-On-policy distillation (OPD) enables a student model to learn from a larger teacher model by training on its own rollouts while matching the teacher's token-level log-probabilities. OPD is orthogonal to advantage estimators — it works as an additive KL penalty on top of any estimator (GRPO, PPO, REINFORCE++, etc.).
+On-policy distillation (OPD) trains a student model on its own rollouts while using a teacher model's token-level probabilities as the distillation signal. In Miles, the teacher signal is converted into a per-token reverse-KL penalty and applied after the selected RL advantage estimator has produced token advantages. This lets the same OPD recipe compose with GRPO, PPO, REINFORCE++, GSPO, and other estimators.
 
 ## Key Arguments
 
@@ -20,12 +20,12 @@ On-policy distillation (OPD) enables a student model to learn from a larger teac
 OPD modifies the advantage computation by subtracting a KL penalty term that encourages the student to match the teacher's output distribution:
 
 $$
-\hat{A}_t = A_t - \lambda_{\text{opd}} \cdot D_{\text{KL}}(P_{\text{teacher}} \| P_{\text{student}})_t
+\hat{A}_t = A_t - \lambda_{\text{opd}} \cdot D_{\text{KL}}(P_{\text{student}} \| P_{\text{teacher}})_t
 $$
 
 Where $A_t$ is the original advantage from the base estimator (e.g., GRPO), $\lambda_{\text{opd}}$ is `--opd-kl-coef`, and $D_{\text{KL}}$ is the token-level reverse KL divergence.
 
-This means OPD can be combined with any advantage estimator, including GRPO, PPO, REINFORCE++, and GSPO.
+The implementation follows the additive OPD training recipe described in the [Thinking Machines OPD blog](https://thinkingmachines.ai/blog/on-policy-distillation/), with an additional SGLang top-k reward mode from [Rethinking On-Policy Distillation](https://arxiv.org/abs/2604.13016).
 
 ## Rethinking OPD Top-K Reward
 
@@ -54,8 +54,9 @@ The teacher runs on an external SGLang server. Teacher log-probs are obtained du
 **How it works**:
 1. An external SGLang server runs the teacher model.
 2. During rollout, the custom reward function (`miles.rollout.on_policy_distillation.reward_func`) sends each sample to the teacher server to obtain token-level log-probs.
-3. The custom post-processing function (`miles.rollout.on_policy_distillation.post_process_rewards`) trims the teacher log-probs to the response span and stores them in `sample.teacher_log_probs`.
-4. During training, the KL penalty is computed from the stored teacher log-probs and applied to advantages.
+3. With `--opd-log-prob-top-k=0`, the custom post-processing function trims sampled-token teacher log-probs to the response span and stores them in `sample.teacher_log_probs`.
+4. With `--opd-log-prob-top-k>0`, it computes the Rethinking OPD weighted top-k reverse-KL estimate and stores it in `sample.opd_reverse_kl`.
+5. During training, the stored OPD penalty is subtracted from the selected estimator's advantages.
 
 **Configuration**:
 ```bash
@@ -131,3 +132,8 @@ Using Qwen3-8B-Base model SFT-ed on part of the [OpenThoughts3-1.2M](https://hug
 |-----------------------------------------------|--------|
 | Qwen3-8B-Base + SFT                           | 76%    |
 | Qwen3-8B-Base + SFT + On-Policy Distillation  | 94%    |
+
+## References
+
+- [Thinking Machines: On-Policy Distillation](https://thinkingmachines.ai/blog/on-policy-distillation/)
+- [Rethinking On-Policy Distillation](https://arxiv.org/abs/2604.13016)

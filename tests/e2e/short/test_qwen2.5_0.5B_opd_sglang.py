@@ -40,27 +40,27 @@ def _launch_teacher_server(teacher_gpu: str):
     env["CUDA_VISIBLE_DEVICES"] = teacher_gpu
 
     log_path = "/tmp/sglang_teacher.log"
-    log_file = open(log_path, "w")
-    process = subprocess.Popen(
-        [
-            "python3",
-            "-m",
-            "sglang.launch_server",
-            "--model-path",
-            f"/root/models/{MODEL_NAME}",
-            "--host",
-            "0.0.0.0",
-            "--port",
-            str(TEACHER_PORT),
-            "--tp",
-            "1",
-            "--mem-fraction-static",
-            "0.6",
-        ],
-        env=env,
-        stdout=log_file,
-        stderr=subprocess.STDOUT,
-    )
+    with open(log_path, "w") as log_file:
+        process = subprocess.Popen(
+            [
+                "python3",
+                "-m",
+                "sglang.launch_server",
+                "--model-path",
+                f"/root/models/{MODEL_NAME}",
+                "--host",
+                "0.0.0.0",
+                "--port",
+                str(TEACHER_PORT),
+                "--tp",
+                "1",
+                "--mem-fraction-static",
+                "0.6",
+            ],
+            env=env,
+            stdout=log_file,
+            stderr=subprocess.STDOUT,
+        )
 
     print(f"Starting teacher sglang server on GPU {teacher_gpu} (pid={process.pid}), log: {log_path}")
 
@@ -69,10 +69,11 @@ def _launch_teacher_server(teacher_gpu: str):
         if process.poll() is not None:
             raise RuntimeError(f"Teacher server process exited with code {process.returncode}. Check {log_path}")
         try:
-            req = urllib.request.urlopen(f"http://{TEACHER_HOST}:{TEACHER_PORT}/health_generate", timeout=2)
-            if req.status == 200:
-                print(f"Teacher sglang server is ready on GPU {teacher_gpu}")
-                return process
+            health_url = f"http://{TEACHER_HOST}:{TEACHER_PORT}/health_generate"
+            with urllib.request.urlopen(health_url, timeout=2) as req:
+                if req.status == 200:
+                    print(f"Teacher sglang server is ready on GPU {teacher_gpu}")
+                    return process
         except Exception:
             pass
         time.sleep(5)
