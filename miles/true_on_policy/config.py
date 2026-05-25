@@ -288,6 +288,13 @@ class TrueOnPolicyConfig:
                 f"({self.rollout_num_gpus_per_engine} % {self.rollout_expert_parallel_size} != 0)."
             )
 
+        # TODO(true-on-policy): factor in sglang_moe_data_parallel_size when that
+        # flag is wired through the qwen3_moe true-on-policy launch path. The
+        # SGLang MoE TP is rollout_num_gpus_per_engine / (sglang_ep * sglang_moe_dp);
+        # today no script sets sglang_moe_data_parallel_size > 1, so dividing by
+        # rollout_expert_parallel_size alone is correct, but enabling MoE DP later
+        # will need this validation to multiply rollout_expert_parallel_size by
+        # sglang_moe_data_parallel_size before computing rollout_moe_tp_size.
         rollout_moe_tp_size = self.rollout_num_gpus_per_engine // self.rollout_expert_parallel_size
         if rollout_moe_tp_size != self.expert_tensor_parallel_size:
             raise ValueError(

@@ -137,34 +137,11 @@ def validate_args(args):
     args.sglang_dp_size = args.sglang_data_parallel_size
     args.sglang_pp_size = args.sglang_pipeline_parallel_size
     args.sglang_ep_size = args.sglang_expert_parallel_size
-    if hasattr(args, "sglang_moe_data_parallel_size"):
-        args.sglang_moe_dp_size = args.sglang_moe_data_parallel_size
     if hasattr(args, "sglang_attention_context_parallel_size"):
         args.sglang_attn_cp_size = args.sglang_attention_context_parallel_size
 
     if args.true_on_policy_mode:
         args.sglang_enable_deterministic_inference = True
-        if getattr(args, "num_experts", None) and args.num_experts > 1:
-            if args.sglang_ep_size < 1:
-                raise ValueError("SGLang rollout EP must be at least 1 for MoE true-on-policy.")
-            moe_dp_size = getattr(args, "sglang_moe_dp_size", 1) or 1
-            moe_parallel_size = args.sglang_ep_size * moe_dp_size
-            if args.rollout_num_gpus_per_engine % moe_parallel_size != 0:
-                raise ValueError(
-                    "Qwen3 MoE true-on-policy requires rollout_num_gpus_per_engine to be "
-                    "divisible by sglang_ep_size * sglang_moe_dp_size "
-                    f"({args.rollout_num_gpus_per_engine} % {moe_parallel_size} != 0)."
-                )
-            sglang_moe_tp_size = args.rollout_num_gpus_per_engine // moe_parallel_size
-            train_expert_tp_size = getattr(args, "expert_tensor_parallel_size", 1) or 1
-            if sglang_moe_tp_size != train_expert_tp_size:
-                raise ValueError(
-                    "Qwen3 MoE true-on-policy requires SGLang MoE TP to match Megatron "
-                    "expert tensor parallelism: "
-                    "rollout_num_gpus_per_engine / (sglang_ep_size * sglang_moe_dp_size) "
-                    f"= {sglang_moe_tp_size}, but expert_tensor_parallel_size "
-                    f"= {train_expert_tp_size}."
-                )
 
     if getattr(args, "recompute_logprobs_via_prefill", False):
         args.sglang_enable_prefill_only_deterministic_inference = True

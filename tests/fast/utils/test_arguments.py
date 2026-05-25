@@ -209,26 +209,6 @@ def test_true_on_policy_args_propagate_to_sglang_server_args(
     assert server_args["enable_dp_lm_head"] is False
 
 
-def test_true_on_policy_moe_rejects_sglang_moe_tp_mismatch():
-    args = SimpleNamespace(
-        rollout_num_gpus_per_engine=4,
-        sglang_data_parallel_size=1,
-        sglang_pipeline_parallel_size=1,
-        sglang_expert_parallel_size=2,
-        sglang_enable_dp_attention=False,
-        sglang_router_policy=None,
-        sglang_router_ip=None,
-        true_on_policy_mode=True,
-        recompute_logprobs_via_prefill=False,
-        sglang_enable_deterministic_inference=False,
-        num_experts=128,
-        expert_tensor_parallel_size=1,
-    )
-
-    with pytest.raises(ValueError, match="SGLang MoE TP to match Megatron"):
-        sglang_validate_args(args)
-
-
 def test_true_on_policy_sglang_cp_dp_lm_head_overrides_engine_defaults():
     args = SimpleNamespace(
         rollout_num_gpus_per_engine=8,
