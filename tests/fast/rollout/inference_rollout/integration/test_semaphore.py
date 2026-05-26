@@ -1,7 +1,10 @@
 from tests.ci.ci_register import register_cuda_ci
 
-# Rollout integration tests pull in miles' experimental FSDP utils
-# (ring_flash_attn → flash_attn) via parse_args. Run in GPU fast suite.
+# `no_limit` asserts max_concurrent >= 2 with --sglang-server-concurrency=999
+# and 50ms per-request latency. On CPU CI runners the request dispatch loop
+# serializes faster than the latency window, so observed max drops to 1 and
+# the assertion fails. Pinned to GPU until the assertion is rewritten to be
+# scheduler-independent.
 register_cuda_ci(est_time=60, suite="stage-b-2-gpu-h200", labels=[])
 
 import pytest
