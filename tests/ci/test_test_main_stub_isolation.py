@@ -1,44 +1,51 @@
 """Regression test guarding the stub-isolation invariant of
 ``tests/fast/utils/debug_utils/run_megatron/worker/test_main.py``.
 
-Contract under test
--------------------
-``test_main.py`` calls ``_ensure_module`` at module import time to populate
-``sys.modules`` with stubs for leaf modules whose top-level imports would
-fail in the lightweight test container.  The hard invariant: for any leaf
-name that is actually present on disk (``importlib.util.find_spec`` returns
-a non-None spec), the entry in ``sys.modules`` after import MUST be the
-real module (has a populated ``__file__`` or ``__path__``), not a starved
-``ModuleType`` instance fabricated by ``_ensure_module``.
+Contract under test (post-Round-4 architecture)
+-----------------------------------------------
+Round 4 (commit ``b19a8fd11``) moved ``test_main.py``'s ``sys.modules``
+stubbing out of module-level code into a scoped pytest fixture
+(``worker_main``) that uses ``monkeypatch.setitem`` so every mutation
+is undone on test teardown.  The hard invariant after that refactor:
 
-This guards against two regressions:
+1. ``test_main.py``'s tests must pass cleanly in their own pytest
+   session (no syntax / import-time issues).
+2. Importing ``test_main.py`` as a plain module (without running its
+   tests) MUST NOT install any stub for a
+   ``miles.backends.megatron_utils.*`` leaf into ``sys.modules`` — i.e.
+   if any such leaf appears in ``sys.modules`` after the import, it is
+   a real on-disk module with a populated ``__file__`` or ``__path__``,
+   never a fabricated ``ModuleType`` carrying only ``MagicMock``
+   attributes.
 
-1. The current bug (pre-``a5757ca99``) where a bare ``try / except
-   ImportError`` around ``importlib.import_module`` could not distinguish
-   "module absent from disk" from "module on disk whose body raises
-   ImportError due to a missing transitive dep" — both fell through to the
-   stub branch and overwrote the real module name in ``sys.modules``.
+This guards against a regression that took several rounds to pin
+down: when stubbing was performed at module import time, the
+under-populated stub for
+``miles.backends.megatron_utils.checkpoint`` starved a downstream
+sibling test (``test_lora_model_branches.py``) with
+``ImportError: cannot import name 'save_checkpoint'``.  Re-introducing
+module-level mutation would resurrect that failure mode.
 
-2. Any future re-introduction of blind-stub behavior gated on simple
-   import success rather than ``find_spec`` presence.
-
-The test runs the probe in a fresh subprocess so it never has to roll back
-``sys.modules`` mutations in the parent interpreter.  It depends only on
-stdlib and pytest.
+The test runs everything in subprocesses so it never mutates the
+parent interpreter's ``sys.modules``.  It depends only on stdlib and
+pytest.
 """
 
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
 
 import pytest
 
-# Leaf names that ``test_main.py`` stubs at import time.  If that list ever
-# grows the probe below should grow with it; the invariant applies to every
-# name added to ``sys.modules`` by ``_ensure_module``.
+
+# Leaf names that the old (pre-Round-4) ``test_main.py`` stubbed at
+# module-import time.  The fixture-scoped architecture still references
+# the same leaf set inside the fixture body, but it must NOT leak any
+# of them into ``sys.modules`` at plain-import time.
 _LEAF_NAMES = (
     "miles.backends.megatron_utils.arguments",
     "miles.backends.megatron_utils.checkpoint",
@@ -46,42 +53,28 @@ _LEAF_NAMES = (
     "miles.backends.megatron_utils.model_provider",
 )
 
+_TEST_MAIN_RELPATH = "tests/fast/utils/debug_utils/run_megatron/worker/test_main.py"
+_TEST_MAIN_DOTTED = "tests.fast.utils.debug_utils.run_megatron.worker.test_main"
+
 
 _PROBE_SCRIPT = r"""
 import json
 import importlib
-import importlib.util
 import sys
 
 LEAF_NAMES = {leaf_names!r}
+TARGET = {target!r}
 
-# Snapshot find_spec results BEFORE importing test_main, so the answer
-# reflects on-disk presence and is not polluted by any stubs placed into
-# sys.modules at import time (find_spec consults sys.modules first and
-# would otherwise reflect a stub's missing __spec__ rather than the
-# real on-disk module).
-on_disk = {{}}
-for name in LEAF_NAMES:
-    try:
-        spec = importlib.util.find_spec(name)
-    except Exception:
-        spec = None
-    on_disk[name] = spec is not None
+# Snapshot which leaves are already in sys.modules *before* importing
+# the test file, so we can attribute any newly-appeared stub to the
+# import we are about to perform.
+pre_import_present = {{name: name in sys.modules for name in LEAF_NAMES}}
 
-# Trigger the module-level stubbing performed by test_main.py.  In
-# environments where a leaf's body raises ImportError (the real bug
-# surface the new _ensure_module deliberately propagates), import_module
-# bubbles out of here — proving the stub branch did NOT corrupt
-# sys.modules with a starved ModuleType.  Report the propagation
-# explicitly so the parent test can treat it as an invariant-satisfied
-# outcome rather than a probe failure.
 try:
-    importlib.import_module(
-        "tests.fast.utils.debug_utils.run_megatron.worker.test_main"
-    )
+    importlib.import_module(TARGET)
     import_ok = True
     import_error = None
-except ImportError as exc:
+except BaseException as exc:
     import_ok = False
     import_error = f"{{type(exc).__name__}}: {{exc}}"
 
@@ -94,10 +87,10 @@ for name in LEAF_NAMES:
 
     records.append({{
         "name": name,
-        "exists_on_disk": on_disk[name],
+        "pre_import_present": pre_import_present[name],
+        "in_sys_modules": mod is not None,
         "is_real_module": is_real_module,
         "file": getattr(mod, "__file__", None),
-        "in_sys_modules": mod is not None,
         "type": type(mod).__name__ if mod is not None else None,
     }})
 
@@ -114,62 +107,110 @@ def _repo_root() -> Path:
     return Path(__file__).resolve().parents[2]
 
 
-def test_test_main_does_not_starve_real_leaves() -> None:
-    """Every find_spec-positive leaf must resolve to a real module in
-    ``sys.modules`` after ``test_main`` is imported — never a fabricated
-    empty ``ModuleType`` stub."""
-    repo_root = _repo_root()
-    probe = _PROBE_SCRIPT.format(leaf_names=list(_LEAF_NAMES))
+def _inherited_env(repo_root: Path) -> dict[str, str]:
+    """Inherit the parent environment but force ``PYTHONPATH`` to the
+    repo root so the child interpreter resolves ``tests.*`` and
+    ``miles.*`` from the working tree."""
+    env = dict(os.environ)
+    env["PYTHONPATH"] = str(repo_root)
+    return env
 
-    result = subprocess.run(
-        [sys.executable, "-c", probe],
+
+def _run_test_main_in_subprocess(repo_root: Path) -> subprocess.CompletedProcess:
+    """Run ``pytest -q`` on ``test_main.py`` in an isolated subprocess.
+
+    Isolating the inner pytest session is the whole point: its
+    ``sys.modules`` mutations (now fixture-scoped) live and die inside
+    the child interpreter, never touching ours.
+    """
+    return subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "-q",
+            str(repo_root / _TEST_MAIN_RELPATH),
+        ],
+        cwd=str(repo_root),
         capture_output=True,
         text=True,
-        cwd=str(repo_root),
-        env={
-            **_inherited_env(),
-            "PYTHONPATH": str(repo_root),
-        },
+        env=_inherited_env(repo_root),
     )
 
+
+def _run_probe_in_subprocess(repo_root: Path) -> dict:
+    """Import ``test_main.py`` as a plain module in a fresh
+    subprocess and report the resulting ``sys.modules`` state for the
+    four leaf names."""
+    probe = _PROBE_SCRIPT.format(
+        leaf_names=list(_LEAF_NAMES),
+        target=_TEST_MAIN_DOTTED,
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", probe],
+        cwd=str(repo_root),
+        capture_output=True,
+        text=True,
+        env=_inherited_env(repo_root),
+    )
     assert result.returncode == 0, (
         f"probe subprocess failed (rc={result.returncode}).\n" f"stderr:\n{result.stderr}\nstdout:\n{result.stdout}"
     )
-
-    # The probe prints exactly one JSON line; tolerate trailing whitespace
-    # or interleaved warnings by taking the last non-empty stdout line.
+    # The probe emits exactly one JSON line.  Tolerate trailing
+    # whitespace or interleaved warnings by taking the last non-empty
+    # stdout line.
     stdout_lines = [ln for ln in result.stdout.splitlines() if ln.strip()]
     assert stdout_lines, f"probe produced no stdout. stderr:\n{result.stderr}"
-    payload = json.loads(stdout_lines[-1])
+    return json.loads(stdout_lines[-1])
 
-    # If test_main itself raised ImportError during its module-level
-    # stubbing loop, the new _ensure_module deliberately surfaced a real
-    # transitive-dep failure rather than masking it with a starved stub.
-    # That is the desired outcome of this round's fix; treat it as an
-    # invariant-satisfied case (no stubs were placed, so none can be
-    # starved).  Production CI runs in an env where the bodies do import
-    # cleanly and takes the records branch below.
-    if not payload["import_ok"]:
-        return
 
-    records = payload["records"]
-    starved = [r for r in records if r["exists_on_disk"] and not r["is_real_module"]]
-    assert not starved, (
-        "test_main stubbed real on-disk modules with starved ModuleType "
-        "instances; this means _ensure_module fell back to its stub branch "
-        "for a module find_spec considers importable, which violates the "
-        "stub-isolation invariant. Offending records:\n" + json.dumps(starved, indent=2)
+def test_test_main_tests_pass_in_isolated_subprocess() -> None:
+    """The whole point of Round 4's refactor: ``test_main.py``'s own
+    tests must pass cleanly in an isolated pytest session.  If they
+    don't, downstream invariants are moot."""
+    repo_root = _repo_root()
+    result = _run_test_main_in_subprocess(repo_root)
+    assert result.returncode == 0, (
+        "test_main.py's own tests failed in isolated subprocess "
+        f"(rc={result.returncode}).\n"
+        f"--- stdout ---\n{result.stdout}\n"
+        f"--- stderr ---\n{result.stderr}"
     )
 
 
-def _inherited_env() -> dict[str, str]:
-    """Copy the parent environment except for PYTHONPATH (we set it
-    explicitly to the repo root)."""
-    import os
+def test_importing_test_main_does_not_install_starved_stubs() -> None:
+    """Plain-import of ``test_main.py`` must not leak any starved stub
+    into ``sys.modules`` for the four ``miles.backends.megatron_utils.*``
+    leaves.
 
-    env = dict(os.environ)
-    env.pop("PYTHONPATH", None)
-    return env
+    Under the new fixture-scoped architecture, all stubbing happens
+    inside the ``worker_main`` fixture via ``monkeypatch.setitem``, so
+    a plain ``importlib.import_module`` of the test file must not
+    mutate ``sys.modules`` at all for these leaves.  If a leaf does
+    appear in ``sys.modules`` (e.g. because something else in the
+    import chain pulled in a real implementation), it must be a real
+    on-disk module — never a fabricated ``ModuleType`` with no
+    ``__file__`` or ``__path__``.
+
+    This catches any future regression that re-introduces module-level
+    stub mutation (the original cause of the
+    ``test_lora_model_branches.py`` starvation bug).
+    """
+    repo_root = _repo_root()
+    payload = _run_probe_in_subprocess(repo_root)
+
+    assert payload["import_ok"], "Plain import of test_main raised in probe subprocess:\n" f"{payload['import_error']}"
+
+    records = payload["records"]
+    starved = [r for r in records if r["in_sys_modules"] and not r["is_real_module"]]
+    assert not starved, (
+        "After plain-importing test_main.py, sys.modules contains "
+        "starved stub(s) for miles.backends.megatron_utils leaves; "
+        "this means stub mutation has leaked out of the worker_main "
+        "fixture's monkeypatch scope and back into module-level code, "
+        "resurrecting the architectural defect Round 4 fixed.\n"
+        "Offending records:\n" + json.dumps(starved, indent=2)
+    )
 
 
 if __name__ == "__main__":
