@@ -26,11 +26,11 @@ from miles.utils.types import RolloutBatch
 
 from ...utils.profile_utils import TrainProfiler
 from ...utils.tensor_backper import TensorBackuper
-from ..training_utils.cp_utils import slice_with_cp
 from ..training_utils.data import DataIterator, get_data_iterator, get_rollout_data, sync_actor_critic_data
 from ..training_utils.log_utils import log_cpu_memory, log_perf_data, log_rollout_data
 from ..training_utils.loss import compute_advantages_and_returns, get_log_probs_and_entropy, get_values
 from ..training_utils.parallel import get_parallel_state
+from ..training_utils.replay_data import fill_replay_data
 from .checkpoint import load_checkpoint
 from .initialize import init, is_megatron_main_rank
 from .lora_utils import is_lora_enabled
@@ -239,77 +239,6 @@ class MegatronTrainRayActor(TrainRayActor):
         for m in all_replay_managers:
             m.stage = stage
 
-    def _fill_replay_data(
-        self,
-        data_iterator,
-        num_microbatches,
-        rollout_data,
-        data_key: str,
-        replay_list: list,
-        register_replay_list_func,
-        if_sp_region=True,
-    ):
-        if data_key not in rollout_data:
-            raise ValueError(f"{data_key} is required in rollout_data for replay.")
-
-        for iterator in data_iterator:
-            iterator.reset()
-
-        parallel_state = get_parallel_state()
-        tp_rank = parallel_state.tp.rank
-        tp_size = parallel_state.tp.size
-        qkv_format = self.args.qkv_format
-
-        def pad_func(data, pad):
-            _, num_layers, topk = data.shape
-            pad_tensor = torch.full(
-                (pad, num_layers, topk),
-                fill_value=-1,
-                device=data.device,
-                dtype=data.dtype,
-            )
-            return torch.cat([data, pad_tensor], dim=0)
-
-        for _ in range(sum(num_microbatches)):
-            batch = data_iterator[0].get_next([data_key, "tokens", "max_seq_lens"])
-            replay_data = batch[data_key]
-            tokens = batch["tokens"]
-            assert len(replay_data) == len(tokens)
-            for a, b in zip(replay_data, tokens, strict=False):
-                assert a.shape[0] == b.shape[0] - 1, f"{a.shape}, {b.shape}"
-
-            # We need to pad the experts to the last token. We won't calculate loss on this token so this should be fine.
-            # TODO: fuse this padding with the following slice_with_cp to reduce memory copy.
-            replay_data = [pad_func(r, 1) for r in replay_data]
-            # TODO: maybe extract a common process function for here and get_batch?
-
-            if qkv_format == "bshd":
-                max_seqlen = batch["max_seq_lens"][0]
-                replay_data = [slice_with_cp(r, pad_func, qkv_format, max_seqlen) for r in replay_data]
-                replay_data = torch.stack(replay_data, dim=0)
-                batch_size, seqlen, num_layers, topk = replay_data.shape
-                replay_data = replay_data.reshape(batch_size * seqlen, num_layers, topk)
-            else:
-                replay_data = [slice_with_cp(r, pad_func, qkv_format) for r in replay_data]
-                replay_data = torch.cat(replay_data, dim=0)
-                pad_size = parallel_state.tp.size * self.args.data_pad_size_multiplier
-                pad = (pad_size - replay_data.size(0) % pad_size) % pad_size
-                if pad != 0:
-                    replay_data = pad_func(replay_data, pad)
-
-            if self.args.sequence_parallel and if_sp_region:
-                seqlen = replay_data.size(0)
-                assert seqlen % tp_size == 0
-                start, end = seqlen // tp_size * tp_rank, seqlen // tp_size * (tp_rank + 1)
-                replay_data = replay_data[start:end]
-
-            register_replay_list_func(replay_list, replay_data, self.model)
-
-        del rollout_data[data_key]
-
-        for iterator in data_iterator:
-            iterator.reset()
-
     def compute_log_prob(
         self,
         data_iterator: list[DataIterator],
@@ -380,10 +309,12 @@ class MegatronTrainRayActor(TrainRayActor):
 
         for m in all_replay_managers:
             if self._use_rollout_replay(m):
-                self._fill_replay_data(
-                    data_iterator,
-                    num_microbatches,
-                    rollout_data,
+                fill_replay_data(
+                    args=self.args,
+                    models=self.model,
+                    data_iterator=data_iterator,
+                    num_microbatches=num_microbatches,
+                    rollout_data=rollout_data,
                     data_key=m.data_key,
                     replay_list=m.replays,
                     register_replay_list_func=get_register_replay_list_func(m),
