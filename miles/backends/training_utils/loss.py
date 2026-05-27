@@ -143,7 +143,7 @@ def get_responses(
 
 
 def get_log_probs_and_entropy(
-    logits: torch.Tensor,
+    logits,
     *,
     args: Namespace,
     unconcat_tokens: list[torch.Tensor],
@@ -153,6 +153,9 @@ def get_log_probs_and_entropy(
     non_loss_data: bool = True,
     max_seq_lens: list[int] | None = None,
 ) -> dict[str, list[torch.Tensor]]:
+    # MILES VL PATCH: gemma4_vl forward returns (logits, aux). Unwrap.
+    if isinstance(logits, tuple):
+        logits = logits[0]
     """Compute per-token log-probabilities (and optionally entropy) on responses.
 
     For each sample, extracts response-aligned logits and tokens, then computes
@@ -771,8 +774,18 @@ def policy_loss_function(
 
     if train_rollout_logprob_abs_diff is not None:
         reported_loss["train_rollout_logprob_abs_diff"] = train_rollout_logprob_abs_diff.clone().detach()
-    if train_rollout_kl is not None:
-        reported_loss["train_rollout_kl"] = train_rollout_kl.clone().detach()
+        # MILES: robust lpdiff metrics (excludes the 1-5 catastrophic-outlier tokens per batch)
+        with torch.no_grad():
+            _per_tok = (old_log_probs - rollout_log_probs).abs().detach().float().flatten()
+            if _per_tok.numel() > 0:
+                _med = _per_tok.median()
+                _q95 = torch.quantile(_per_tok, 0.95)
+                # p95-trimmed mean: drop top 5% then average
+                _kept = _per_tok[_per_tok <= _q95]
+                _trim = _kept.mean() if _kept.numel() > 0 else _per_tok.mean()
+                reported_loss["train_rollout_logprob_abs_diff_median"] = _med.detach()
+                reported_loss["train_rollout_logprob_abs_diff_p95trim"] = _trim.detach()
+
 
     if args.use_kl_loss:
         reported_loss["kl_loss"] = kl_loss.clone().detach()
@@ -905,9 +918,12 @@ def loss_function(
     args: Namespace,
     batch: RolloutBatch,
     num_microbatches: int,
-    logits: torch.Tensor,
+    logits,  # MILES VL PATCH: may be tuple for VL models
     apply_megatron_loss_scaling: bool = False,
 ) -> tuple[torch.Tensor, int | torch.Tensor, dict[str, list[str] | torch.Tensor]]:
+    # MILES VL PATCH: gemma4_vl forward returns (logits, aux). Unwrap.
+    if isinstance(logits, tuple):
+        logits = logits[0]
     """Dispatch to the configured loss and rescale for Megatron integration.
 
     Selects one of "policy_loss", "value_loss", "sft_loss", or a custom loss

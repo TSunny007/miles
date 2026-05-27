@@ -2243,6 +2243,16 @@ def hf_validate_args(args, hf_config):
     if hasattr(hf_config, "rope_parameters") and isinstance(hf_config.rope_parameters, dict):
         if "rope_theta" in hf_config.rope_parameters:
             hf_config.rope_theta = hf_config.rope_parameters["rope_theta"]
+        else:
+            # Gemma 4 (and similar hybrid attention models) nest rope_parameters
+            # by attention type, e.g. {"full_attention": {"rope_theta": 1e6, ...},
+            # "sliding_attention": {...}}. Pick the first available rope_theta
+            # so the equality check below has a value to compare against the
+            # Megatron-side rotary_base (which is provider-set from the same source).
+            for _entry in hf_config.rope_parameters.values():
+                if isinstance(_entry, dict) and "rope_theta" in _entry:
+                    hf_config.rope_theta = _entry["rope_theta"]
+                    break
 
     for hf_config_name, megatron_config_name, compare_fn in [
         ("hidden_size", "hidden_size", equal),

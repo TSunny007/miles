@@ -271,6 +271,9 @@ def forward_only(
             loss_mask=batch["full_loss_masks"],
             **(batch["multimodal_train_inputs"] if batch["multimodal_train_inputs"] is not None else {}),
         )
+        # MILES gemma4 VL: unwrap (logits, aux) tuple
+        if isinstance(output_tensor, tuple):
+            output_tensor = output_tensor[0]
 
         return output_tensor, partial(
             f,
@@ -442,6 +445,9 @@ def train_one_step(
                 forward_kwargs.update(batch["multimodal_train_inputs"])
 
             output_tensor = model(**forward_kwargs)
+        # MILES gemma4 VL: unwrap (logits, aux) tuple
+        if isinstance(output_tensor, tuple):
+            output_tensor = output_tensor[0]
 
         for m, old_stage in zip(all_replay_managers, old_stages, strict=True):
             m.stage = old_stage
