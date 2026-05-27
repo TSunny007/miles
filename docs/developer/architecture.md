@@ -118,12 +118,18 @@ missing a hook. Open an issue.
 
 ```text
 tests/
-├── fast/             # fast, no GPU (location-as-registration: stage-a-cpu by default)
-├── fast-gpu/         # fast GPU tests (explicit register_cuda_ci required)
-├── ci/               # CI-gated suite
-├── e2e/              # end-to-end (spins up Ray + SGLang)
-└── utils/            # shared test helpers
+├── fast/             # CPU CI only — each test_*.py auto-registers as stage-a-cpu (register_cuda_ci is rejected here)
+├── fast-gpu/         # GPU or CPU CI, registered explicitly (register_cuda_ci / register_cpu_ci)
+├── ci/               # the suite runner + registry, with their own CPU CI
+└── e2e/              # end-to-end (spins up Ray + SGLang); GPU or CPU CI, registered explicitly
 ```
+
+CI discovery is location-based. `tests/fast/` may hold **only CPU CI**: every `test_*.py` there
+auto-registers as `stage-a-cpu`, so no boilerplate is needed — write a literal `register_cpu_ci(...)`
+only to override the defaults, and a `register_cuda_ci` under `tests/fast/` is an error (move the file
+to `tests/fast-gpu/`). Every other folder may hold **GPU or CPU CI** and must register each test
+explicitly with `register_cpu_ci` / `register_cuda_ci`. The runner collects `tests/fast/`,
+`tests/fast-gpu/`, `tests/e2e/`, and `tests/ci/`.
 
 Run `pytest tests/fast` for a quick CPU check (`pytest tests/fast-gpu` if you have a GPU);
 run `tests/e2e` before landing anything that touches the train loop.

@@ -1,4 +1,5 @@
 import ast
+import glob
 import warnings
 from dataclasses import dataclass, field
 from enum import Enum, auto
@@ -9,6 +10,7 @@ __all__ = [
     "HWBackend",
     "CIRegistry",
     "collect_tests",
+    "discover_ci_files",
     "register_cpu_ci",
     "register_cuda_ci",
     "ut_parse_one_file",
@@ -232,17 +234,23 @@ def ut_parse_one_file(filename: str) -> list[CIRegistry]:
 
 
 def _is_implicit_fast_cpu_path(filename: str) -> bool:
-    """True when `filename` is a repo-relative path under tests/fast/.
-
-    collect_tests only ever sees the repo-relative paths run_suite.py gets
-    from glob.glob("tests/fast/**/*.py"), so the prefix is anchored at the
-    start of the string; the trailing slash keeps same-prefix siblings
-    (tests/fast-gpu/, tests/fastish/) and the bare tests/fast directory out.
-    Absolute or ./-prefixed paths are intentionally not recognized: this
-    check leans on the same repo-root cwd that ut_parse_one_file's
-    open(filename) already requires to read the file at all.
-    """
     return filename.startswith("tests/fast/")
+
+
+# Directories the CI runner scans.
+# 1. tests/fast/ is CPU-only and auto-registers
+# 2. the rest require an explicit register_*_ci on each discovered file.
+# 3. Only test_*.py are collected.
+# 4. Patterns are repo-relative, so the runner must run from the repo root (the same cwd ut_parse_one_file's open() assumes).
+_DISCOVERY_ROOTS = ("tests/fast", "tests/fast-gpu", "tests/e2e", "tests/ci")
+
+
+def discover_ci_files() -> list[str]:
+    """Return every CI test file (sorted, repo-relative) across the roots."""
+    files: list[str] = []
+    for root in _DISCOVERY_ROOTS:
+        files.extend(glob.glob(f"{root}/**/test_*.py", recursive=True))
+    return sorted(files)
 
 
 def _file_text_mentions_register(filename: str) -> bool:
@@ -282,8 +290,7 @@ def collect_tests(files: list[str], sanity_check: bool = True) -> list[CIRegistr
     for file in files:
         registries = ut_parse_one_file(file)
         if _is_implicit_fast_cpu_path(file):
-            # tests/fast/ is CPU-only by location; register_cuda_ci must
-            # live under tests/fast-gpu/ instead.
+            # tests/fast/ is CPU-only by location;
             for r in registries:
                 if r.backend != HWBackend.CPU:
                     raise ValueError(

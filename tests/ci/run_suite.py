@@ -1,12 +1,10 @@
 import argparse
-import glob
 import subprocess
 import sys
 import warnings
 from collections.abc import Iterable
-from pathlib import Path
 
-from tests.ci.ci_register import CIRegistry, HWBackend, collect_tests
+from tests.ci.ci_register import CIRegistry, HWBackend, collect_tests, discover_ci_files
 from tests.ci.ci_utils import run_unittest_files
 
 HW_MAPPING = {
@@ -141,20 +139,6 @@ def auto_partition(files: list[CIRegistry], rank, size):
     return []
 
 
-def _is_e2e_discovery_file(filename: str) -> bool:
-    basename = Path(filename).name
-    return (
-        basename != "conftest.py"
-        and basename != "__init__.py"
-        and not basename.startswith("_")
-        and not filename.endswith(".gitkeep")
-        # Exclude helper modules that aren't test files
-        and "/sglang_patch/sglang_server.py" not in filename
-        and "/sglang/utils/" not in filename
-        and "short/test_dumper.py" not in filename
-    )
-
-
 def pretty_print_tests(args, ci_tests: list[CIRegistry], skipped_tests: list[CIRegistry]):
     hw = HW_MAPPING[args.hw]
     suite = args.suite
@@ -197,27 +181,7 @@ def run_a_suite(args):
     auto_partition_id = args.auto_partition_id
     auto_partition_size = args.auto_partition_size
 
-    # Discover test files. tests/e2e/ holds full e2e training suites;
-    # tests/fast/ is CPU-only (location-as-registration: collect_tests
-    # synthesizes stage-a-cpu for files with no register_*_ci call);
-    # tests/fast-gpu/ is the GPU-fast sibling whose files must explicitly
-    # call register_cuda_ci. tests/utils/test_*.py is a small set of
-    # cross-cutting CPU utilities discovered alongside fast.
-    e2e_files = [f for f in glob.glob("tests/e2e/**/*.py", recursive=True) if _is_e2e_discovery_file(f)]
-
-    def _fast_subtree(root: str) -> list[str]:
-        return [
-            f
-            for f in glob.glob(f"{root}/**/*.py", recursive=True)
-            if "/test_" in f
-            and not f.endswith("/conftest.py")
-            and not f.endswith("/__init__.py")
-            and not f.endswith("/utils.py")
-        ]
-
-    fast_files = _fast_subtree("tests/fast") + _fast_subtree("tests/fast-gpu") + glob.glob("tests/utils/test_*.py")
-    files = e2e_files + fast_files
-
+    files = discover_ci_files()
     all_tests = collect_tests(files, sanity_check=True)
     stripped_labels = strip_run_ci_prefix(args.labels or [])
     ci_tests, skipped_tests = filter_tests(

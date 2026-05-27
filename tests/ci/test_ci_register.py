@@ -20,8 +20,11 @@ from tests.ci.ci_register import (
     _file_text_mentions_register,
     _is_implicit_fast_cpu_path,
     collect_tests,
+    register_cpu_ci,
     ut_parse_one_file,
 )
+
+register_cpu_ci(est_time=1, suite="stage-a-cpu", labels=[])
 
 
 @pytest.fixture(autouse=True)
