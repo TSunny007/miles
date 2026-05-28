@@ -1,6 +1,4 @@
-import sys
 from argparse import Namespace
-from pathlib import Path
 from types import SimpleNamespace
 
 
@@ -30,10 +28,6 @@ def _make_args():
 
 
 def test_local_model_provider_passes_true_on_policy_spec_flags(monkeypatch):
-    megatron_path = Path.cwd().parent / "Megatron-LM"
-    if megatron_path.exists():
-        sys.path.insert(0, str(megatron_path))
-
     from miles.backends.megatron_utils import model_provider as provider_module
 
     captured = {}
