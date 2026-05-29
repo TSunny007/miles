@@ -59,9 +59,7 @@ def lighting_indexer(
     logits = indexer_fwd_interface(index_q, index_k, weights_2d, cu_seqlen_ks, cu_seqlen_ke, clean_logits=True)
 
     if topk_indices is None:
-        topk_fn = indexer_replay_manager.get_topk_fn(
-            _original_topk, return_probs=False, fill_padding_with_arange=False
-        )
+        topk_fn = indexer_replay_manager.get_topk_fn(_original_topk, return_probs=False)
         topk_indices = topk_fn(logits, topk)
 
     index_score = IndexerFunction.apply(index_q, index_k, weights_2d, cu_seqlen_ks, cu_seqlen_ke, logits, topk_indices)
