@@ -90,8 +90,7 @@ def fill_replay_data(
         else:
             replay_data = [slice_with_cp(r, pad_func, qkv_format) for r in replay_data]
             if indices_are_token_positions:
-                # per-sample rollout indices are 0-based; rebase onto the packed
-                # (concatenated) sequence to match the training indexer's coords
+                # map indices to thd format
                 offset = 0
                 for i, r in enumerate(replay_data):
                     replay_data[i] = torch.where(r != -1, r + offset, r)
