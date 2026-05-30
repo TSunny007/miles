@@ -113,7 +113,12 @@ def get_rollout_topk_from_response(args, output, sample, key, num_layers=None, t
         num_layers = args.num_layers
     if topk is None:
         topk = args.moe_router_topk
-    return x.reshape(len(sample.tokens) - 1, num_layers, topk)
+    num_tokens = len(sample.tokens) - 1
+    if num_tokens <= 0:
+        return np.empty((0, num_layers, max(0, topk)), dtype=np.int32)
+    if topk == -1:
+        topk = len(x) // (num_tokens * num_layers)
+    return x.reshape(num_tokens, num_layers, topk)
 
 
 def get_indexer_topk_from_response(args, output, sample):
@@ -124,5 +129,5 @@ def get_indexer_topk_from_response(args, output, sample):
         "Server returned indexer_topk without indexer_topk_num_layers; "
         "sglang-miles must include the layer count in meta_info."
     )
-    # topk dim recovered from buffer length via reshape(-1).
+    # topk dim recovered from buffer length (passed as -1)
     return get_rollout_topk_from_response(args, output, sample, "indexer_topk", num_layers, -1)
