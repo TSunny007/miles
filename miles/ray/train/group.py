@@ -60,6 +60,7 @@ class RayTrainGroup:
         with_ref: bool,
     ) -> None:
         self.args = args
+        self._rollout_manager = rollout_manager
 
         total_gpus = num_nodes * num_gpus_per_node
         num_cells = (total_gpus // compute_megatron_world_size_except_dp(args)) if args.indep_dp else 1
@@ -221,8 +222,11 @@ class RayTrainGroup:
     async def update_weights(self):
         """Broadcast weights to rollout engines."""
         # TODO: allow using all cells to update weights (instead of first alive cell)
+        # Fetch the updatable engines + lock once (like V1 RayActorGroup) so all
+        # ranks observe a consistent engine set; the actor releases the lock itself.
+        info = await self._rollout_manager.get_updatable_engines_and_lock.remote()
         # Catch with vanilla retry: cells w/ exceptions are auto marked errored, thus retry will find the next one
-        await retry(lambda _: self._execute_first_alive("update_weights"))
+        await retry(lambda _: self._execute_first_alive("update_weights", info=info))
 
     async def onload(self):
         # Catch *without* retry: cells w/ exceptions are auto marked errored, and will not be used
