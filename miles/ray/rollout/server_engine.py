@@ -8,27 +8,39 @@ from pydantic import BaseModel, ConfigDict
 logger = logging.getLogger(__name__)
 
 
-# NOTE: currently it is almost a dataclass without encapsulation;
-#       ideally, it may encapsulate all logic and ensure state transition only happens after internal actions,
-#       and no external code can touch its internals
+# NOTE: currently it is almost a dataclass without encapsulation to minimize code diff
+#       (logic is batched currently while may be non-batched in the future)
+#       ideally, it may encapsulate all actions and states, and ensure state transition
+#       only happens after internal actions, while no external code can touch its internals
+#       for example:
+#         def __init__(...configs...)
+#         def init(): _allocate_engine(); _mark_allocated(); _init_engine(); _mark_alive()
+#         def stop(): _kill_engine(); _mark_stopped()
+#       and external code cannot directly mutate the engines
+#       this makes it more encapsulated, easier to reason about, and prevents state-resource inconsistency
 class ServerEngine:
     def __init__(self):
         self._state = _StateStopped()
 
-    def mark_allocated(self, actor_handle: ray.actor.ActorHandle):
-        self._change_state("mark_allocated", _StateStopped, _StateAllocated(actor_handle=actor_handle))
+    def mark_allocated_uninitialized(self, actor_handle: ray.actor.ActorHandle):
+        self._change_state("mark_allocated", _StateStopped, _StateAllocatedUninitialized(actor_handle=actor_handle))
+
+    def mark_alive(self):
+        self._change_state(
+            "mark_alive", _StateAllocatedUninitialized, _StateAllocatedAlive(actor_handle=self.actor_handle)
+        )
 
     def mark_stopped(self):
-        self._change_state("mark_stopped", (_StateStopped, _StateAllocated), _StateStopped())
+        self._change_state("mark_stopped", (_StateStopped, _StateAllocatedBase), _StateStopped())
 
     @property
     def actor_handle(self) -> ray.actor.ActorHandle:
-        assert isinstance(self._state, _StateAllocated)
+        assert isinstance(self._state, _StateAllocatedBase)
         return self._state.actor_handle
 
     @property
     def is_allocated(self) -> bool:
-        return isinstance(self._state, _StateAllocated)
+        return isinstance(self._state, _StateAllocatedBase)
 
     # TODO: unify w/ trainer `change_state`
     def _change_state(
@@ -54,8 +66,16 @@ class _StateStopped(_StateBase):
     pass
 
 
-class _StateAllocated(_StateBase):
+class _StateAllocatedBase(_StateBase):
     actor_handle: ray.actor.ActorHandle
 
 
-_State = _StateStopped | _StateAllocated
+class _StateAllocatedUninitialized(_StateAllocatedBase):
+    pass
+
+
+class _StateAllocatedAlive(_StateAllocatedBase):
+    pass
+
+
+_State = _StateStopped | _StateAllocatedUninitialized | _StateAllocatedAlive
