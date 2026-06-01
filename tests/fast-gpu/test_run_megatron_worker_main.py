@@ -37,6 +37,16 @@ def _ensure_module(dotted: str) -> ModuleType:
     return sys.modules[dotted]
 
 
+# Import the real `miles` package tree before any stubbing below. `_ensure_module`
+# walks dotted ancestors and stubs every missing segment, so stubbing a
+# `miles.backends.megatron_utils.*` leaf while `miles` is not yet imported would
+# replace the real `miles` package with an empty (non-package) stub -- and the
+# later `from miles.utils...main import` would then fail with "miles is not a
+# package". Importing the real parent package here registers the genuine
+# `miles`, `miles.backends`, and `miles.backends.megatron_utils` packages in
+# sys.modules so only the leaf modules get stubbed.
+import miles.backends.megatron_utils  # noqa: E402
+
 # Stub modules whose top-level imports in main.py would fail.
 _STUBS: dict[str, dict[str, Any]] = {
     "megatron.training.arguments": {
