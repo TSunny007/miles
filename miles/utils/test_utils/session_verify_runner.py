@@ -11,13 +11,7 @@ pipeline (sglang + miles-router with session support) is launched, ``train`` is
 skipped, and the rollout drives ``session_verify_agent.run_agent`` against the
 session server.
 
-Args flow through miles' canonical ``parse_args`` Namespace — the wrapper
-script calls ``parse_args(add_custom_arguments=_session_verify_extras)`` and
-forwards the resulting Namespace to ``run_session_verify(args=ns)``. Multi-node
-fields (``--actor-num-nodes``, ``--actor-num-gpus-per-node``,
-``--rollout-num-gpus-per-engine`` …) come straight from miles' canonical surface;
-the runner itself adds no parallel argparse and serializes the Namespace back
-into the ``train_args`` string ``execute_train`` consumes.
+Args flow through miles' canonical ``parse_args`` Namespace.
 
 # Backend choice
 
@@ -56,14 +50,6 @@ _PLACEHOLDER_PROMPT_RECORD = {
     ],
 }
 
-# Session-verify invariants — applied via ``parser.set_defaults`` in
-# ``_session_verify_extras`` for the CLI path, and spread into the Namespace
-# built by tests.  Rollout batching: ``rollout-batch-size 16`` ×
-# ``n-samples-per-prompt`` × ``num-rollout 1`` = ``global-batch-size 64``.  The
-# single placeholder prompt is cycled inside the batch — that's the path
-# miles' rollout layer actually parallelizes on, so leave it at 16 even though
-# the prompt-data file is single-record.  Setting batch-size=1 with a
-# multi-sample n triggers unexpected agent re-invocation in the rollout loop.
 SESSION_VERIFY_INVARIANT_ARGS: dict[str, Any] = {
     "prompt_data": PROMPT_DATA_PATH,
     "input_key": "messages",
