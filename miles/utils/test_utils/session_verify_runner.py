@@ -239,7 +239,6 @@ def run_session_verify(args: argparse.Namespace) -> None:
             megatron_model_type=None,
             extra_env_vars={
                 "MILES_EXPERIMENTAL_ROLLOUT_REFACTOR": "1",
-                "SGLANG_E2E_MODEL_PATH": args.hf_checkpoint,
                 "MILES_TITO_MODEL": args.tito_model,
                 "MILES_SESSION_VERIFY_METRICS_PATH": metrics_path,
             },
