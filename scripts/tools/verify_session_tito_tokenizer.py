@@ -108,6 +108,14 @@ def main() -> int:
         "the model — small models can run TP=1 even on a full 8-GPU node.",
     )
     parser.add_argument(
+        "--ep-size",
+        type=int,
+        default=1,
+        help="sglang expert-parallel size (``--sglang-expert-parallel-size``).  "
+        "Default 1.  MoE/NSA models such as DeepSeek V3.2 require ep>1 or the "
+        "sglang engine fails at init; set it to match --tp-size (e.g. 8).",
+    )
+    parser.add_argument(
         "--num-gpus",
         type=int,
         default=8,
@@ -172,6 +180,7 @@ def main() -> int:
     print(f"Reasoning parser:      {args.reasoning_parser}")
     print(f"Tool call parser:      {args.tool_call_parser or '(none)'}")
     print(f"Engine TP size:        {args.tp_size}")
+    print(f"Engine EP size:        {args.ep_size}")
     print(f"Actor GPUs per node:   {args.num_gpus}")
     print(f"Samples per prompt:    {args.n_samples}")
     print(f"Cycles per sample:     {args.cycles}")
@@ -194,6 +203,7 @@ def main() -> int:
             reasoning_parser=args.reasoning_parser,
             tool_call_parser=args.tool_call_parser,
             tp_size=args.tp_size,
+            ep_size=args.ep_size,
             num_gpus=args.num_gpus,
             n_samples_per_prompt=args.n_samples,
             cycles=args.cycles,

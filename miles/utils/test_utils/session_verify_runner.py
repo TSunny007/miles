@@ -84,6 +84,7 @@ def build_train_args(
     tito_model: str,
     allowed_append_roles,
     tp_size: int,
+    ep_size: int = 1,
     num_gpus: int = 8,
     reasoning_parser: str,
     tool_call_parser: str | None,
@@ -141,6 +142,11 @@ def build_train_args(
     sglang_args = f"--rollout-num-gpus-per-engine {tp_size} " f"--sglang-reasoning-parser {reasoning_parser} "
     if tool_call_parser:
         sglang_args += f"--sglang-tool-call-parser {tool_call_parser} "
+    # DeepSeek V3.2 (and other NSA/MoE archs) requires expert-parallel > 1 in
+    # sglang; the default is 1, which is fatal at engine init.  Only emit the
+    # flag when the caller asks for ep>1 so single-expert models stay untouched.
+    if ep_size > 1:
+        sglang_args += f"--sglang-expert-parallel-size {ep_size} "
     sglang_args += "--rm-type random "
 
     infra_args = (
@@ -168,6 +174,7 @@ def run_session_verify(
     reasoning_parser: str | None = None,
     tool_call_parser: str | None = None,
     tp_size: int = 1,
+    ep_size: int = 1,
     num_gpus: int = 8,
     n_samples_per_prompt: int = 4,
     cycles: int = 3,
@@ -203,6 +210,7 @@ def run_session_verify(
         tito_model=tito_model,
         allowed_append_roles=allowed_append_roles,
         tp_size=tp_size,
+        ep_size=ep_size,
         num_gpus=num_gpus,
         reasoning_parser=reasoning_parser,
         tool_call_parser=tool_call_parser,
