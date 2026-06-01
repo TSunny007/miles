@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import dataclasses
 import enum
 import logging
 import shutil
 from argparse import Namespace
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -14,7 +15,8 @@ import torch
 import torch.distributed as dist
 from sglang.srt.debug_utils.dumper import DumperConfig, _get_rank, dumper
 
-from miles.backends.training_utils.parallel import get_parallel_state
+from miles.backends.training_utils.parallel import ParallelState, get_parallel_state
+from miles.utils.process_group_utils import GeneralPGUtil
 
 logger = logging.getLogger(__name__)
 
@@ -81,6 +83,7 @@ async def configure_sglang(args: Namespace) -> None:
 
 class DumperMegatronUtil:
     def __init__(self, args: Namespace, model: Sequence[torch.nn.Module], phase: DumperPhase) -> None:
+        self.args = args
         self.phase = phase
         self.overrides = _get_phase_override_configs(args, phase)
         self.enabled = self._configure(args, phase, self.overrides)
@@ -100,8 +103,15 @@ class DumperMegatronUtil:
         extracted_model = self._extract_model(model)
         if self.phase is DumperPhase.FWD_BWD and self.overrides.get("enable_model_grad"):
             _log_model_grad_coverage(extracted_model)
-
-        dumper.dump_model(extracted_model)
+            # The raw per-rank ``main_grad`` is not topology-invariant: a non-FT
+            # baseline dumps a single intra-DP rank's local (un-reduced) grad,
+            # while an indep-DP (fault-tolerant) target dumps the cross-replica
+            # SUM. Reduce each side to the same global gradient so dumps are
+            # directly comparable across different DP topologies.
+            with _topology_invariant_grad_for_dump(extracted_model, self.args):
+                dumper.dump_model(extracted_model)
+        else:
+            dumper.dump_model(extracted_model)
         dumper.step()
         dumper.configure(enable=False)
 
@@ -140,6 +150,63 @@ class DumperMegatronUtil:
         _cleanup_dump_dir(Path(merged["dir"]) / merged["exp_name"])
         dumper.configure(**dataclasses.asdict(full_config))
         return True
+
+
+def _loss_parallel_size(parallel_state: ParallelState, args: Namespace) -> int:
+    # Mirror the loss scaling applied in
+    # miles.backends.training_utils.loss.loss_function: the loss (hence the
+    # accumulated grad) is multiplied by exactly this factor, so dividing it out
+    # cancels the loss scaling symmetrically on both compared runs.
+    if args.true_on_policy_mode and parallel_state.is_ulysses_cp:
+        return parallel_state.intra_dp.size
+    return parallel_state.intra_dp_cp.size
+
+
+@contextlib.contextmanager
+def _topology_invariant_grad_for_dump(model: torch.nn.Module, args: Namespace) -> Iterator[None]:
+    """Temporarily expose the global, loss-scale-normalized gradient via ``param.grad``.
+
+    The dumper reads ``param.grad`` (falling back to ``main_grad``). We compute
+    ``sum_over_intra_dp(main_grad) / loss_parallel_size`` and stash it into
+    ``param.grad`` for the duration of the dump:
+
+    - Non-FT baseline: ``intra_dp`` spans all DP ranks, so the all-reduce
+      reconstructs the full gradient from per-rank local accumulators.
+    - Indep-DP (FT) target: ``intra_dp`` is trivial (size 1); the cross-replica
+      SUM already happened upstream, so the all-reduce is a no-op.
+
+    Dividing by ``loss_parallel_size`` removes the Megatron loss scaling that
+    differs between the two topologies. The remaining per-microbatch / batch-size
+    factors are identical across runs and cancel in the comparison.
+
+    All intra-DP ranks run the dumper (only effective-DP rank 0 writes files), so
+    the all-reduce is collective and symmetric across the group.
+    """
+    parallel_state = get_parallel_state()
+    intra_dp = parallel_state.intra_dp
+    loss_parallel_size = _loss_parallel_size(parallel_state, args)
+
+    saved_grads: list[tuple[torch.nn.Parameter, torch.Tensor | None]] = []
+    try:
+        for _name, param in model.named_parameters():
+            if not param.requires_grad:
+                continue
+            grad = param.grad if param.grad is not None else getattr(param, "main_grad", None)
+            if grad is None:
+                continue
+
+            reduced = grad.detach().float().clone()
+            if intra_dp.size > 1 and intra_dp.group is not None:
+                GeneralPGUtil.create(intra_dp.group).all_reduce(reduced, intra_dp.group, op=dist.ReduceOp.SUM)
+            reduced /= loss_parallel_size
+
+            saved_grads.append((param, param.grad))
+            param.grad = reduced
+
+        yield
+    finally:
+        for param, original_grad in saved_grads:
+            param.grad = original_grad
 
 
 def _log_model_grad_coverage(model: torch.nn.Module) -> None:
