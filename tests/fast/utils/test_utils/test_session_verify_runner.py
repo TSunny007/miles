@@ -5,8 +5,8 @@ import pytest
 
 from miles.utils.test_utils.session_verify_runner import (
     SESSION_VERIFY_INVARIANT_ARGS,
-    _assert_session_verify_metrics,
-    _namespace_to_train_args,
+    assert_session_verify_metrics,
+    namespace_to_train_args,
 )
 
 
@@ -26,7 +26,7 @@ def _build_args(**overrides) -> str:
         "sglang_tool_call_parser": "qwen25",
     }
     values.update(overrides)
-    return _namespace_to_train_args(argparse.Namespace(**values))
+    return namespace_to_train_args(argparse.Namespace(**values))
 
 
 def test_namespace_to_train_args_uses_default_rollout_max_response_len():
@@ -62,7 +62,7 @@ def test_session_verify_metrics_accepts_cross_sample_append_tool(tmp_path):
         ],
     )
 
-    _assert_session_verify_metrics(str(metrics_path), assistant_text_threshold=0.1)
+    assert_session_verify_metrics(str(metrics_path), assistant_text_threshold=0.1)
 
 
 def test_session_verify_metrics_requires_at_least_one_append_tool(tmp_path):
@@ -70,4 +70,4 @@ def test_session_verify_metrics_requires_at_least_one_append_tool(tmp_path):
     _write_metrics(metrics_path, [{"driver_events": ["initial", "append_user"], "had_assistant_mismatch": False}])
 
     with pytest.raises(AssertionError, match="no sample produced an append_tool action"):
-        _assert_session_verify_metrics(str(metrics_path), assistant_text_threshold=0.1)
+        assert_session_verify_metrics(str(metrics_path), assistant_text_threshold=0.1)

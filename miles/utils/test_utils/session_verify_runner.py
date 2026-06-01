@@ -139,7 +139,7 @@ def _clear_proxy_env() -> None:
         os.environ.pop(proxy_var, None)
 
 
-def _namespace_to_train_args(ns: argparse.Namespace) -> str:
+def namespace_to_train_args(ns: argparse.Namespace) -> str:
     """Serialize a fully-shaped Namespace into the ``train_args`` string.
 
     Reads miles-canonical field names off ``ns``; emits the exact flag set
@@ -223,7 +223,7 @@ def run_session_verify(args: argparse.Namespace) -> None:
     _clear_proxy_env()
     args.hf_checkpoint = _ensure_model_downloaded(args.hf_checkpoint)
 
-    train_args = _namespace_to_train_args(args)
+    train_args = namespace_to_train_args(args)
 
     # Per-sample token-seq metrics file: rollout workers append one JSONL line
     # per sample inside session_verify_agent.generate; we aggregate after
@@ -245,7 +245,7 @@ def run_session_verify(args: argparse.Namespace) -> None:
             },
         )
         try:
-            _assert_session_verify_metrics(metrics_path, assistant_text_threshold=args.assistant_text_threshold)
+            assert_session_verify_metrics(metrics_path, assistant_text_threshold=args.assistant_text_threshold)
         except AssertionError:
             import shutil
 
@@ -260,7 +260,7 @@ def run_session_verify(args: argparse.Namespace) -> None:
             pass
 
 
-def _assert_session_verify_metrics(metrics_path: str, *, assistant_text_threshold: float) -> None:
+def assert_session_verify_metrics(metrics_path: str, *, assistant_text_threshold: float) -> None:
     """Read per-sample JSONL metrics and assert cross-sample verifier gates.
 
     Forbidden mismatch types (special_*, non_assistant_text) are caught
