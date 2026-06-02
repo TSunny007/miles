@@ -16,7 +16,7 @@ from .qwen3moe import convert_qwen3moe_to_hf
 @dataclass(frozen=True)
 class AtomicUpdateGroup:
     key: str
-    names: tuple[str, ...]
+    suffixes: tuple[str, ...]
 
 
 # TODO unify w/ `convert_to_hf`

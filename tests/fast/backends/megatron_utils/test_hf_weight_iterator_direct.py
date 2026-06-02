@@ -108,32 +108,32 @@ def _param(name: str, size: int) -> ParamInfo:
 def test_atomic_group_is_single_update_unit_and_packed_together(direct_module, monkeypatch):
     from miles.backends.megatron_utils.megatron_to_hf import AtomicUpdateGroup
 
-    params = [_param("a", 4), _param("b", 4), _param("c", 4)]
+    params = [_param("layer.a", 4), _param("layer.b", 4), _param("layer.c", 4)]
     monkeypatch.setattr(direct_module, "_get_param_full_size", lambda info: info.size)
 
     update_units = direct_module.get_named_update_units(
-        [param.name for param in params], [AtomicUpdateGroup("pair", ("b", "c"))]
+        [param.name for param in params], [AtomicUpdateGroup("pair", (".b", ".c"))]
     )
-    assert [unit.names for unit in update_units] == [("a",), ("b", "c")]
+    assert [unit.names for unit in update_units] == [("layer.a",), ("layer.b", "layer.c")]
 
     buckets = direct_module._pack_update_units(Namespace(update_weight_buffer_size=6), params, update_units)
-    assert [[param.name for param in bucket] for bucket in buckets] == [["a"], ["b", "c"]]
+    assert [[param.name for param in bucket] for bucket in buckets] == [["layer.a"], ["layer.b", "layer.c"]]
 
 
 def test_atomic_group_specs_raise_explicit_errors(direct_module, monkeypatch):
     from miles.backends.megatron_utils.megatron_to_hf import AtomicUpdateGroup
 
-    params = [_param("a", 4), _param("b", 4)]
+    params = [_param("layer.a", 4), _param("layer.b", 4)]
 
     invalid_groups = [
-        ([AtomicUpdateGroup("empty", ())], "Atomic update group empty has no params"),
-        ([AtomicUpdateGroup("missing", ("c",))], "Atomic update group missing references unknown param c"),
+        ([AtomicUpdateGroup("empty", ())], "Atomic update group empty has no suffixes"),
+        ([AtomicUpdateGroup("missing", (".c",))], "Atomic update group missing references no params"),
         (
-            [AtomicUpdateGroup("left", ("a",)), AtomicUpdateGroup("right", ("a",))],
-            "Param a appears in multiple atomic update groups",
+            [AtomicUpdateGroup("left", (".a",)), AtomicUpdateGroup("right", (".a",))],
+            "Param layer.a matches multiple atomic update groups",
         ),
         (
-            [AtomicUpdateGroup("duplicate", ("a",)), AtomicUpdateGroup("duplicate", ("b",))],
+            [AtomicUpdateGroup("duplicate", (".a",)), AtomicUpdateGroup("duplicate", (".b",))],
             "Duplicate atomic update group: duplicate",
         ),
     ]
@@ -198,7 +198,7 @@ def test_distributed_expert_update_units_are_packed_together(direct_module, monk
     monkeypatch.setattr(
         mixin,
         "get_atomic_update_groups",
-        lambda args, model_name: [AtomicUpdateGroup("pair", ("module.experts.b", "module.experts.c"))],
+        lambda args, model_name: [AtomicUpdateGroup("pair", (".b", ".c"))],
     )
     monkeypatch.setattr(mixin, "all_gather_param", lambda args, name, param: param)
     monkeypatch.setattr(mixin, "get_parallel_state", lambda: SimpleNamespace(ep=SimpleNamespace(size=1)))
@@ -218,7 +218,7 @@ def test_distributed_atomic_group_cannot_span_expert_and_non_expert(direct_modul
     from miles.backends.megatron_utils.update_weight.update_weight_from_distributed import mixin
 
     updater = _distributed_updater(mixin)
-    named_tensors = [("a", _tensor(4)), ("module.experts.b", _tensor(4))]
+    named_tensors = [("module.a", _tensor(4)), ("module.experts.b", _tensor(4))]
     monkeypatch.setattr(mixin.dist, "get_rank", lambda: 0)
     monkeypatch.setattr(
         mixin, "collect_named_tensors_for_weight_transfer", lambda *args, **kwargs: iter(named_tensors)
@@ -226,7 +226,7 @@ def test_distributed_atomic_group_cannot_span_expert_and_non_expert(direct_modul
     monkeypatch.setattr(
         mixin,
         "get_atomic_update_groups",
-        lambda args, model_name: [AtomicUpdateGroup("mixed", ("a", "module.experts.b"))],
+        lambda args, model_name: [AtomicUpdateGroup("mixed", (".a", ".experts.b"))],
     )
 
     with pytest.raises(RuntimeError, match="spans expert and non-expert params"):

@@ -34,21 +34,49 @@ def get_named_update_units(param_names: Sequence[str], atomic_update_groups) -> 
     grouped_names: set[str] = set()
     group_keys: set[str] = set()
     ordered_units: list[tuple[int, NamedUpdateUnit]] = []
+    pending_groups: dict[tuple[str, str], tuple[tuple[str, ...], list[str | None]]] = {}
+    matched_group_keys: set[str] = set()
 
     for group in atomic_update_groups:
         key = group.key
-        names = group.names
+        suffixes = group.suffixes
         assert key not in group_keys, f"Duplicate atomic update group: {key}"
-        assert names, f"Atomic update group {key} has no params"
-        assert len(set(names)) == len(names), f"Atomic update group {key} contains duplicate params"
+        assert suffixes, f"Atomic update group {key} has no suffixes"
+        assert all(suffixes), f"Atomic update group {key} contains empty suffix"
+        assert len(set(suffixes)) == len(suffixes), f"Atomic update group {key} contains duplicate suffixes"
         group_keys.add(key)
 
-        for name in names:
-            assert name not in grouped_names, f"Param {name} appears in multiple atomic update groups"
-            assert name in position, f"Atomic update group {key} references unknown param {name}"
-            grouped_names.add(name)
+    for name in param_names:
+        matches = [
+            (group, suffix_idx, suffix)
+            for group in atomic_update_groups
+            for suffix_idx, suffix in enumerate(group.suffixes)
+            if name.endswith(suffix)
+        ]
+        assert len(matches) <= 1, f"Param {name} matches multiple atomic update groups"
+        if not matches:
+            continue
 
-        ordered_units.append((min(position[name] for name in names), NamedUpdateUnit(names=tuple(names))))
+        group, suffix_idx, suffix = matches[0]
+        prefix = name[: -len(suffix)]
+        suffixes, names = pending_groups.setdefault(
+            (prefix, group.key), (group.suffixes, [None] * len(group.suffixes))
+        )
+        assert names[suffix_idx] is None, f"Atomic update group {prefix}:{group.key} has duplicate suffix {suffix}"
+        names[suffix_idx] = name
+        grouped_names.add(name)
+        matched_group_keys.add(group.key)
+
+    for group in atomic_update_groups:
+        assert (
+            group.key in matched_group_keys
+        ), f"Atomic update group {group.key} references no params matching suffixes {group.suffixes}"
+
+    for (prefix, key), (suffixes, names) in pending_groups.items():
+        missing_suffixes = tuple(suffix for suffix, name in zip(suffixes, names, strict=True) if name is None)
+        assert not missing_suffixes, f"Atomic update group {prefix}:{key} missing suffixes {missing_suffixes}"
+        resolved_names = tuple(name for name in names if name is not None)
+        ordered_units.append((min(position[name] for name in resolved_names), NamedUpdateUnit(names=resolved_names)))
 
     for name in param_names:
         if name not in grouped_names:
