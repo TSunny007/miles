@@ -108,3 +108,36 @@ def test_materialize_multimodal_inputs_copies_numpy_values() -> None:
 
     assert materialized[0] is not None
     torch.testing.assert_close(materialized[0]["pixel_values"], torch.tensor([[1.0, 2.0]], dtype=torch.float32))
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA for the deferred host->device path")
+def test_deferred_materialize_then_collate_lands_on_cuda() -> None:
+    """End-to-end deferred path smoke test: pinned-CPU materialize, then collate onto CUDA.
+
+    No other test exercises the actual host->device path (the rest collate onto
+    CPU). This confirms the deferred pipeline — materialize on pinned CPU, then
+    collate onto CUDA — yields a correctly concatenated payload resident on the
+    device. It does not assert the copy is non_blocking (async vs sync is not
+    observable from the output); that property is guaranteed structurally by
+    moving each pinned tensor over before the concat in
+    ``_cat_multimodal_tensors_for_forward``.
+    """
+    device = torch.device("cuda", torch.cuda.current_device())
+    materialized = materialize_multimodal_inputs(
+        [
+            {"pixel_values": np.array([[1.0], [2.0]], dtype=np.float32)},
+            {"pixel_values": np.array([[3.0]], dtype=np.float32)},
+        ],
+        device=torch.device("cpu"),
+    )
+    # Deferred payload is pinned CPU before collation.
+    assert materialized[0] is not None and materialized[0]["pixel_values"].device.type == "cpu"
+
+    multimodal_data, multimodal_num_items = collate_multimodal_train_inputs(materialized, device)
+
+    assert multimodal_data["pixel_values"].device.type == "cuda"
+    torch.testing.assert_close(
+        multimodal_data["pixel_values"].cpu(),
+        torch.tensor([[1.0], [2.0], [3.0]], dtype=torch.float32),
+    )
+    assert multimodal_num_items == {"pixel_values": [2, 1]}

@@ -247,23 +247,26 @@ def materialize_multimodal_inputs(
             if isinstance(device, torch.device) and device.type == "cpu":
                 # Deferred tensors stay on CPU here; pin host memory so the
                 # later non_blocking CPU->CUDA copy can overlap with compute.
+                # pinning makes sure that the memory doesn't get paged out to disk
+                # which would make the copy synchronous.
                 tensor = tensor.pin_memory() if torch.cuda.is_available() else tensor
             materialized_input[key] = tensor
         materialized.append(materialized_input)
     return materialized
 
 
-def _cat_multimodal_tensors_for_forward(values: list[MultimodalValue], device: torch.device | int) -> torch.Tensor:
-    """Concatenate one multimodal field and place only the active microbatch on CUDA."""
-    tensors = [_as_multimodal_tensor(value, None) for value in values]
-    if any(tensor.is_cuda for tensor in tensors):
-        # Expected steady states are all-CPU in deferred mode and all-CUDA in
-        # preload mode. Mixed placement is still normalized before concatenation.
-        # non_blocking only avoids synchronization for CPU tensors backed by
-        # pinned host memory; CUDA tensors are already on the target path.
-        tensors = [tensor.to(device=device, non_blocking=True) for tensor in tensors]
-        return torch.cat(tensors, dim=0)
-    return torch.cat(tensors, dim=0).to(device=device, non_blocking=True)
+def _cat_multimodal_tensors_for_forward(tensors: list[torch.Tensor], device: torch.device | int) -> torch.Tensor:
+    """Concatenate one multimodal field and place only the active microbatch on CUDA.
+
+    The per-tensor ``.to()`` runs *before* the concat on purpose: ``torch.cat``
+    on CPU allocates a fresh *pageable* output tensor, dropping the pinning that
+    :func:`materialize_multimodal_inputs` applied. Concatenating first would
+    therefore force a synchronous host->device copy. Moving each (pinned) tensor
+    over first keeps the copy ``non_blocking`` so it overlaps with compute;
+    already-CUDA tensors (preload mode) make ``.to()`` a no-op.
+    """
+    tensors = [tensor.to(device=device, non_blocking=True) for tensor in tensors]
+    return torch.cat(tensors, dim=0)
 
 
 def collate_multimodal_train_inputs(
@@ -281,7 +284,7 @@ def collate_multimodal_train_inputs(
         A tuple of ``(multimodal_data, multimodal_num_items)``. Tensor values are
         concatenated across the active microbatch and placed on ``device``.
     """
-    values_by_key: dict[str, list[MultimodalValue]] = {}
+    values_by_key: dict[str, list[torch.Tensor]] = {}
     multimodal_num_items: dict[str, list[int]] = {}
     for mm_input_dict in multimodal_train_inputs:
         if mm_input_dict is None:

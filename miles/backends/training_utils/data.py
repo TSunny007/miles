@@ -68,7 +68,11 @@ def get_rollout_data(
         # GPU in advance; with --defer-multimodal-cuda-transfer they stay on
         # pinned CPU memory and only the active microbatch is moved to CUDA
         # during collation (see collate_multimodal_train_inputs).
-        target_device = torch.device("cpu") if args.defer_multimodal_cuda_transfer else torch.cuda.current_device()
+        target_device = (
+            torch.device("cpu")
+            if getattr(args, "defer_multimodal_cuda_transfer", False)
+            else torch.cuda.current_device()
+        )
         rollout_data["multimodal_train_inputs"] = materialize_multimodal_inputs(
             rollout_data["multimodal_train_inputs"],
             target_device,
