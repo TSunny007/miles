@@ -1,8 +1,17 @@
-import importlib
+"""Loss-mask strategies for SFT training.
+
+Follows the same ABC + registry + dispatcher pattern as
+``miles/utils/tracking_utils/base.py`` (TrackingBackend / BACKEND_REGISTRY /
+TrackingManager).  Strategies may hold per-run cached state (e.g.
+system_message_length) computed once at construction and reused across samples.
+"""
+
 from abc import ABC, abstractmethod
 from typing import Any
 
 from transformers import AutoTokenizer
+
+from miles.utils.misc import load_function
 
 
 def get_response_lengths(loss_masks: list[list[int]]) -> list[int]:
@@ -209,13 +218,11 @@ class MultiTurnLossMaskGenerator:
         # Allow fully-qualified class paths for custom strategies without registration.
         if "." in strategy_name:
             try:
-                module_path, class_name = strategy_name.rsplit(".", 1)
-                module = importlib.import_module(module_path)
-                cls = getattr(module, class_name)
+                cls = load_function(strategy_name)
                 if not isinstance(cls, type) or not issubclass(cls, LossMaskStrategy):
                     raise TypeError(f"{strategy_name} is not a LossMaskStrategy subclass")
                 return cls(tokenizer)
-            except (ImportError, AttributeError, ValueError, TypeError) as exc:
+            except (ImportError, AttributeError, TypeError) as exc:
                 raise ValueError(
                     f"Unable to load loss mask strategy {strategy_name!r}. "
                     f"Ensure it is a registered name or a fully-qualified LossMaskStrategy subclass."
