@@ -1,3 +1,11 @@
+"""Async training entry point for Miles.
+
+This script runs a pipelined trainer loop: each rollout is prefetched while the
+previous one is being trained. Fully-decoupled producer/consumer behavior is
+provided by the --rollout-function-path, e.g. the example in
+examples/fully_async/fully_async_rollout.py.
+"""
+
 import asyncio
 import logging
 
@@ -15,9 +23,10 @@ from miles.utils.tracking_utils.tracking import finish_tracking, init_tracking
 logger = logging.getLogger(__name__)
 
 
-# The framework supports other asynchronous approaches such as fully async (which is shown in examples/full_async).
+# The framework supports other asynchronous approaches such as fully async (which is shown in examples/fully_async).
 async def train(args):
     assert not args.colocate, "Colocation is not supported for async training."
+    assert args.update_weights_interval > 0, "--update-weights-interval must be positive."
     configure_logger(args, source=MainProcessIdentity())
     maybe_start_periodic_pyspy_dump()
     # allocate the GPUs
@@ -57,56 +66,61 @@ async def train(args):
 
     # async train loop.
     rollout_data_next_future = rollout_manager.generate.remote(args.start_rollout_id)
-    for rollout_id in range(args.start_rollout_id, args.num_rollout):
-        # Sync the last generation
-        if rollout_data_next_future is not None:
-            rollout_data_curr_ref = await rollout_data_next_future
+    try:
+        for rollout_id in range(args.start_rollout_id, args.num_rollout):
+            # Sync the last generation
+            if rollout_data_next_future is not None:
+                rollout_data_curr_ref = await rollout_data_next_future
 
-        # Start the next rollout early.
-        if rollout_id + 1 < args.num_rollout:
-            rollout_data_next_future = rollout_manager.generate.remote(rollout_id + 1)
+            # Start the next rollout early.
+            if rollout_id + 1 < args.num_rollout:
+                rollout_data_next_future = rollout_manager.generate.remote(rollout_id + 1)
 
-        if args.use_critic:
-            critic_task = await eager_create_task(critic_model.train(rollout_id, rollout_data_curr_ref))
-            if rollout_id >= args.num_critic_only_steps:
-                await actor_model.train(rollout_id, rollout_data_curr_ref)
-            await critic_task
-        else:
-            await actor_model.train(rollout_id, rollout_data_curr_ref)
-
-        if should_run_periodic_action(rollout_id, args.save_interval, num_rollout_per_epoch, args.num_rollout):
-            await actor_model.save_model(
-                rollout_id,
-                force_sync=rollout_id == args.num_rollout - 1,
-            )
             if args.use_critic:
-                await critic_model.save_model(
+                critic_task = await eager_create_task(critic_model.train(rollout_id, rollout_data_curr_ref))
+                try:
+                    if rollout_id >= args.num_critic_only_steps:
+                        await actor_model.train(rollout_id, rollout_data_curr_ref)
+                finally:
+                    await critic_task
+            else:
+                await actor_model.train(rollout_id, rollout_data_curr_ref)
+
+            if should_run_periodic_action(rollout_id, args.save_interval, num_rollout_per_epoch, args.num_rollout):
+                await actor_model.save_model(
                     rollout_id,
                     force_sync=rollout_id == args.num_rollout - 1,
                 )
-            await rollout_manager.save.remote(rollout_id)
+                if args.use_critic:
+                    await critic_model.save_model(
+                        rollout_id,
+                        force_sync=rollout_id == args.num_rollout - 1,
+                    )
+                await rollout_manager.save.remote(rollout_id)
 
-        if (rollout_id + 1) % args.update_weights_interval == 0:
-            # sync generate before update weights to prevent update weight in the middle of generation
-            rollout_data_curr_ref = (await x) if (x := rollout_data_next_future) is not None else None
-            rollout_data_next_future = None
-            await actor_model.update_weights(rollout_id=rollout_id)
+            if (rollout_id + 1) % args.update_weights_interval == 0:
+                # Wait for the in-flight rollout to finish before updating weights, then
+                # carry its result forward as the next iteration's current rollout data.
+                if rollout_data_next_future is not None:
+                    rollout_data_curr_ref = await rollout_data_next_future
+                rollout_data_next_future = None
+                await actor_model.update_weights(rollout_id=rollout_id)
 
-        if should_run_periodic_action(rollout_id, args.eval_interval, num_rollout_per_epoch):
-            await rollout_manager.eval.remote(rollout_id)
+            if should_run_periodic_action(rollout_id, args.eval_interval, num_rollout_per_epoch):
+                await rollout_manager.eval.remote(rollout_id)
 
-        if (
-            args.debug_exit_after_rollout is not None
-            and (rollout_id - args.start_rollout_id + 1) >= args.debug_exit_after_rollout
-        ):
-            logger.info(
-                "debug_exit_after_rollout=%d reached at rollout_id=%d, exiting",
-                args.debug_exit_after_rollout,
-                rollout_id,
-            )
-            break
-
-    await rollout_manager.dispose.remote()
+            if (
+                args.debug_exit_after_rollout is not None
+                and (rollout_id - args.start_rollout_id + 1) >= args.debug_exit_after_rollout
+            ):
+                logger.info(
+                    "debug_exit_after_rollout=%d reached at rollout_id=%d, exiting",
+                    args.debug_exit_after_rollout,
+                    rollout_id,
+                )
+                break
+    finally:
+        await rollout_manager.dispose.remote()
 
 
 if __name__ == "__main__":

@@ -31,12 +31,21 @@ function that owns the background worker:
 
 ```diff
 - python3 train.py ...
-+ python3 train_async.py ...
++ PYTHONPATH=examples/fully_async:$PYTHONPATH python3 train_async.py ...
 +   --rollout-function-path fully_async_rollout.generate_rollout_fully_async
 ```
 
+`fully_async_rollout` must be on `PYTHONPATH`; the example above runs from the repo root.
 Everything else belongs in the same [argument groups](/user-guide/argument-groups) as a
 synchronous run.
+
+Keep in mind:
+
+- `train_async.py` is the async trainer loop; the decoupled producer/consumer queue
+  is implemented by the `--rollout-function-path` you provide.
+- The reference `fully_async_rollout.generate_rollout_fully_async` requires the global
+  rollout dataset, so do not pass `--disable-rollout-global-dataset`.
+- Colocation is not supported; `train_async.py` asserts `not args.colocate`.
 
 ## Queue model
 
@@ -80,6 +89,9 @@ than rollout the producer eventually blocks rather than growing the queue withou
 bound. If the queue stays at zero, rollout is the bottleneck — scale rollout capacity
 or lower per-sample generation cost.
 
+If `--max-weight-staleness` is omitted, the staleness filter is disabled and every
+drained sample is used for training.
+
 ## What to monitor
 
 The reference worker logs progress to stdout, not wandb. Useful lines to grep for:
@@ -98,4 +110,5 @@ rollout engines closer to the latest actor weights so fewer groups get recycled 
 ## Example implementation
 
 For a complete Qwen3 launch script and worker implementation, see the
-[Fully Async Rollout example](/examples/fully-async).
+[Fully Async Rollout example](/examples/fully-async) and the concrete
+`examples/fully_async/run-qwen3-4b-fully_async.sh` launch script.
